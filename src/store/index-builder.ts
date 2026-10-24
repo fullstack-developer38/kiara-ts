@@ -19,9 +19,12 @@ import {
   type NormalizedRow,
   type NormalizedScalar,
   type PreparedStoreData,
-  type TrieNode,
   type TrieSnapshot,
 } from "./types.js";
+import {
+  buildExecutionIndex, diagnosticTrie, normalizedRowsFromTrie, registerExecutionIndex,
+  type ExecutionIndex,
+} from "./execution-index.js";
 import {
   parseDateRangeValue,
   parseDateTimeRangeValue,
@@ -436,86 +439,51 @@ function toMutableFieldIndex(field: SchemaField<AnyModel, string>): MutableField
   };
 }
 
-function buildTrie<T extends object>(
+function legacyIndexes<T extends object>(
   schema: CompiledSchema<T>,
   rows: readonly NormalizedRow<T>[],
-): TrieSnapshot {
-  const nodes = new Map<number, {
-    id: number;
-    level: number;
-    fieldName: string | null;
-    key: NormalizedScalar | null;
-    parentId: number | null;
-    childIds: Map<string, number>;
-    rowIds: Set<number>;
-  }>();
-
-  nodes.set(0, {
-    id: 0,
-    level: 0,
-    fieldName: null,
-    key: null,
-    parentId: null,
-    childIds: new Map<string, number>(),
-    rowIds: new Set<number>(),
-  });
-
-  let nextNodeId = 1;
+): ReadonlyMap<FieldName<T>, FieldIndex> {
+  const mutableIndexes = new Map<FieldName<T>, MutableFieldIndex>();
+  for (const field of schema.fields) {
+    if (field.ignoreIndex) continue;
+    mutableIndexes.set(field.name, toMutableFieldIndex(field as SchemaField<AnyModel, string>));
+  }
   for (const row of rows) {
-    let currentNodeId = 0;
-    const root = nodes.get(0);
-    root?.rowIds.add(row.id);
-
-    let level = 1;
-    for (const field of schema.fields) {
-      const normalized = row.values.get(field.name);
-      const key = normalized?.isCollection === true
-        ? normalized.collectionValues?.map((value) => encodeScalar(value)).join("|") ?? "null"
-        : encodeScalar(normalized?.scalar ?? null);
-      const edgeLabel = `${field.name}:${key}`;
-      const current = nodes.get(currentNodeId);
-      if (current === undefined) {
-        continue;
-      }
-
-      let childId = current.childIds.get(edgeLabel);
-      if (childId === undefined) {
-        childId = nextNodeId;
-        nextNodeId += 1;
-        current.childIds.set(edgeLabel, childId);
-        nodes.set(childId, {
-          id: childId,
-          level,
-          fieldName: field.name,
-          key: normalized?.isCollection === true
-            ? (normalized.collectionValues?.join(",") ?? null)
-            : (normalized?.scalar ?? null),
-          parentId: currentNodeId,
-          childIds: new Map<string, number>(),
-          rowIds: new Set<number>(),
-        });
-      }
-
-      currentNodeId = childId;
-      const child = nodes.get(childId);
-      child?.rowIds.add(row.id);
-      level += 1;
+    for (const [name, value] of row.values) {
+      const index = mutableIndexes.get(name);
+      if (!index) continue;
+      if (value.isCollection) {
+        if (value.collectionValues?.length) indexCollectionValues(index, value.collectionValues, row.id);
+      } else indexScalarValue(index, value.scalar ?? null, row.id);
+      if (value.rangeValues?.length) index.rangeEntries.set(row.id, [...value.rangeValues]);
     }
   }
+  return new Map([...mutableIndexes].map(([name, index]) => [name, freezeIndex(index)]));
+}
 
-  const frozenNodes: TrieNode[] = [...nodes.values()]
-    .sort((left, right) => left.id - right.id)
-    .map((node) => ({
-      id: node.id,
-      level: node.level,
-      fieldName: node.fieldName,
-      key: node.key,
-      parentId: node.parentId,
-      childIds: new Map<string, number>(node.childIds),
-      rowIds: Object.freeze([...node.rowIds]),
-    }));
-
-  return { nodes: Object.freeze(frozenNodes) };
+function preparedData<T extends object>(
+  schema: CompiledSchema<T>,
+  sourceRows: readonly T[],
+  profile: NormalizationProfileType,
+  execution: ExecutionIndex,
+): PreparedStoreData<T> {
+  const rows = Object.freeze([...sourceRows]);
+  let normalized: readonly NormalizedRow<T>[] | undefined;
+  let rowById: ReadonlyMap<number, NormalizedRow<T>> | undefined;
+  let rowIds: readonly number[] | undefined;
+  let indexes: ReadonlyMap<FieldName<T>, FieldIndex> | undefined;
+  let trie: TrieSnapshot | undefined;
+  const getNormalized = () => normalized ??= normalizedRowsFromTrie(execution, rows);
+  const data: PreparedStoreData<T> = {
+    schema, normalizationProfile: profile, rows,
+    get normalizedRows() { return getNormalized(); },
+    get rowById() { return rowById ??= new Map(getNormalized().map((row) => [row.id, row])); },
+    get rowIds() { return rowIds ??= Object.freeze(getNormalized().map((row) => row.id)); },
+    get indexes() { return indexes ??= legacyIndexes(schema, getNormalized()); },
+    get trie() { return trie ??= diagnosticTrie(execution); },
+  };
+  registerExecutionIndex(data, execution);
+  return data;
 }
 
 export function buildPreparedStoreData<T extends object>(
@@ -523,16 +491,7 @@ export function buildPreparedStoreData<T extends object>(
   sourceRows: readonly T[],
   profile: NormalizationProfileType,
 ): PreparedStoreData<T> {
-  const mutableIndexes = new Map<FieldName<T>, MutableFieldIndex>();
-  for (const field of schema.fields) {
-    if (field.ignoreIndex === true) {
-      continue;
-    }
-    mutableIndexes.set(field.name, toMutableFieldIndex(field as SchemaField<AnyModel, string>));
-  }
-
   const normalizedRows: NormalizedRow<T>[] = [];
-  const rowById = new Map<number, NormalizedRow<T>>();
 
   for (let rowId = 0; rowId < sourceRows.length; rowId += 1) {
     const source = sourceRows[rowId];
@@ -577,34 +536,6 @@ export function buildPreparedStoreData<T extends object>(
         throw error;
       }
       values.set(field.name, normalized);
-
-      const fieldIndex = mutableIndexes.get(field.name);
-      if (fieldIndex === undefined) {
-        continue;
-      }
-
-      if (normalized.isCollection) {
-        const tokens = normalized.collectionValues;
-        if (tokens !== undefined && tokens.length > 0) {
-          indexCollectionValues(fieldIndex, tokens, rowId);
-        }
-      } else {
-        indexScalarValue(fieldIndex, normalized.scalar ?? null, rowId);
-      }
-
-      if (isRangeField(field as SchemaField<AnyModel, string>)) {
-        const ranges = normalized.rangeValues;
-        if (ranges !== undefined && ranges.length > 0) {
-          fieldIndex.rangeEntries.set(rowId, [...ranges]);
-        } else if (!normalized.isCollection && typeof rawValue === "string") {
-          const parsed = normalizeRangeInput(
-            field as SchemaField<AnyModel, string>,
-            rawValue,
-            profile,
-          );
-          fieldIndex.rangeEntries.set(rowId, [parsed]);
-        }
-      }
     }
 
     const normalizedRow: NormalizedRow<T> = {
@@ -613,27 +544,9 @@ export function buildPreparedStoreData<T extends object>(
       values,
     };
     normalizedRows.push(normalizedRow);
-    rowById.set(rowId, normalizedRow);
   }
 
-  const frozenIndexes = new Map<FieldName<T>, FieldIndex>();
-  for (const [fieldName, index] of mutableIndexes) {
-    frozenIndexes.set(fieldName, freezeIndex(index));
-  }
-
-  const trie = buildTrie(schema, normalizedRows);
-  const rowIds = Object.freeze(normalizedRows.map((row) => row.id));
-
-  return {
-    schema,
-    normalizationProfile: profile,
-    rows: Object.freeze([...sourceRows]),
-    normalizedRows: Object.freeze(normalizedRows),
-    rowIds,
-    rowById,
-    trie,
-    indexes: frozenIndexes,
-  };
+  return preparedData(schema, sourceRows, profile, buildExecutionIndex({ schema }, normalizedRows));
 }
 
 export function encodeNormalizedScalar(value: NormalizedScalar): string {

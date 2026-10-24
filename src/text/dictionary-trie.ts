@@ -3,6 +3,7 @@ import { extractKeywordTokens } from "./keyword-utils.js";
 interface TrieNode {
   readonly children: Map<string, TrieNode>;
   terminal: boolean;
+  orderedChildren?: readonly [string, TrieNode][];
 }
 
 function createNode(): TrieNode {
@@ -75,6 +76,7 @@ export class DictionaryTrie {
       if (child === undefined) {
         child = createNode();
         node.children.set(char, child);
+        delete node.orderedChildren;
       }
       node = child;
     }
@@ -123,7 +125,7 @@ export class DictionaryTrie {
         predictions.push(current.word);
       }
 
-      const children = [...current.node.children.entries()]
+      const children = current.node.orderedChildren ??= [...current.node.children.entries()]
         .sort((left, right) => right[0].localeCompare(left[0], "en-US"));
       for (const [char, child] of children) {
         stack.push({ node: child, word: current.word + char });
@@ -133,18 +135,35 @@ export class DictionaryTrie {
     return predictions;
   }
 
-  public getOneEditCandidate(input: string): string | null {
+  public getOneEditCandidate(input: string, accepts: (word: string) => boolean = () => true): string | null {
     const normalized = input.trim().toLocaleLowerCase("en-US");
     if (normalized.length <= 3) {
       return null;
     }
 
-    const sortedWords = [...this.words].sort((left, right) => left.localeCompare(right, "en-US"));
-    for (const candidate of sortedWords) {
-      if (isOneEditAway(normalized, candidate)) {
-        return candidate;
+    const candidates: string[] = [];
+    const stack = [{ node: this.root, word: "", distances: Array.from({ length: normalized.length + 1 }, (_, i) => i) }];
+    while (stack.length) {
+      const current = stack.pop()!;
+      if (current.node.terminal && current.distances[normalized.length] === 1
+        && isOneEditAway(normalized, current.word) && accepts(current.word)) {
+        candidates.push(current.word);
+      }
+      for (const [char, node] of current.node.children) {
+        let distances = current.distances;
+        // Match the existing UTF-16 edit contract even when a trie edge is a code point.
+        for (const unit of char.split("")) {
+          const next = [distances[0]! + 1];
+          for (let i = 1; i <= normalized.length; i++) {
+            next.push(Math.min(next[i - 1]! + 1, distances[i]! + 1,
+              distances[i - 1]! + (normalized[i - 1] === unit ? 0 : 1)));
+          }
+          distances = next;
+        }
+        if (distances.some((distance) => distance <= 1)) stack.push({ node, word: current.word + char, distances });
       }
     }
-    return null;
+    candidates.sort((a, b) => a.localeCompare(b, "en-US"));
+    return candidates[0] ?? null;
   }
 }

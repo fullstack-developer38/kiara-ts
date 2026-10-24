@@ -4,9 +4,10 @@ Search your in-memory data by any combination of searchable fields, without
 manually creating indexes for each query. Kiara TS is a browser-first TypeScript
 library with zero runtime dependencies.
 
-**Search in a few milliseconds.** In a recorded Node.js benchmark over 10,000
-records, prepared searches averaged **1.92 ms**, with 95% completing in
-**2.35 ms or less**. See [performance](#performance) for the workload and limits.
+**Prepared indexes, selective execution.** Version 1.2.0
+uses trie-node matching, binary-search bounds, and interval trees. See
+[execution and measured results](./docs/search-execution.md) for the algorithms,
+compatibility boundaries, and comparison with 1.1.0.
 
 ## Install
 
@@ -67,13 +68,18 @@ up to 100 results.
 
 | Measurement | Recorded time |
 |---|---|
-| Average search | **1.92 ms** |
-| 95% of searches completed within | **2.35 ms** |
-| Index preparation, measured separately | 125.38 ms |
+| Average search | **1.97 ms** |
+| 95% of searches completed within | **2.94 ms** |
+| Index preparation, measured separately | 105.77 ms |
 
 These are measurements for one workload, not a latency guarantee. Query times
 exclude loading and preparation. Dataset size, filters, result count, hardware,
 and runtime affect performance; measure your own data, especially in a browser.
+
+The broader [old/new comparison](./docs/search-execution.md#measured-comparison-with-typescript-110)
+also measures high-cardinality numeric/range queries, equality, keyword search,
+and retained memory at 10k and 100k rows. It compares TypeScript versions, not
+Java or Redis.
 
 ## Decorator quick start
 

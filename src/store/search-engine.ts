@@ -1,706 +1,281 @@
 import { QueryValidationError } from "../errors.js";
-import {
-  normalizeDateTimeToEpochSecond,
-  normalizeDateToEpochDay,
-} from "../normalization/date.js";
+import { normalizeDateTimeToEpochSecond, normalizeDateToEpochDay } from "../normalization/date.js";
 import { normalizeJavaLongKey, normalizeNativeNumber } from "../normalization/numeric.js";
-import {
-  parseDateRangeValue,
-  parseDateTimeRangeValue,
-  parseNumericRangeValue,
-} from "../normalization/range.js";
+import { parseDateRangeValue, parseDateTimeRangeValue, parseNumericRangeValue } from "../normalization/range.js";
 import { validateConditions, type Condition } from "../query/condition.js";
 import { validateOperatorCompatibility } from "../query/operator-compatibility.js";
 import { Operator } from "../query/operator.js";
 import type { FieldName, SchemaField } from "../schema/types.js";
+import { normalizeConditionValue } from "./index-builder.js";
 import {
-  buildPreparedStoreData,
-  encodeNormalizedScalar,
-  normalizeConditionValue,
-} from "./index-builder.js";
+  collectionKey, getExecutionIndex, scalarKey, terminalRows,
+  type ExecutionField, type ExecutionIndex,
+} from "./execution-index.js";
+import { bound, type IndexWork } from "./ordered-index.js";
 import {
-  NormalizationProfile,
-  type AnyModel,
-  type FieldIndex,
-  type NormalizedFieldValue,
-  type NormalizedNumericRange,
-  type NormalizedRow,
-  type NormalizedScalar,
-  type PreparedStoreData,
+  NormalizationProfile, type AnyModel, type NormalizedScalar, type PreparedStoreData,
 } from "./types.js";
 
-function toSet(values: readonly number[]): Set<number> {
-  return new Set<number>(values);
+interface Selection {
+  readonly ids: Set<number>;
+  readonly excluded: boolean;
+  readonly field: ExecutionField;
+  readonly level: number;
 }
 
-function intersect(left: Set<number>, right: Set<number>): Set<number> {
+function union(groups: Iterable<Iterable<number>>, work?: IndexWork): Set<number> {
   const result = new Set<number>();
-  for (const rowId of left) {
-    if (right.has(rowId)) {
-      result.add(rowId);
+  for (const group of groups) {
+    for (const id of group) {
+      if (work) work.postingEntriesVisited += 1;
+      result.add(id);
     }
   }
   return result;
 }
 
-function subtract(left: Set<number>, right: Set<number>): Set<number> {
-  const result = new Set<number>();
-  for (const rowId of left) {
-    if (!right.has(rowId)) {
-      result.add(rowId);
-    }
-  }
-  return result;
+function intersection(left: Set<number>, right: Set<number>): Set<number> {
+  if (left.size > right.size) return intersection(right, left);
+  return new Set([...left].filter((id) => right.has(id)));
 }
 
-function union(rowGroups: readonly (readonly number[])[]): Set<number> {
-  const result = new Set<number>();
-  for (const group of rowGroups) {
-    for (const rowId of group) {
-      result.add(rowId);
-    }
-  }
-  return result;
+function isCollection(type: string | undefined): boolean {
+  return type === "commaSeparatedStrings" || type === "commaSeparatedNumbers"
+    || type === "commaSeparatedDates" || type === "commaSeparatedDateTimes";
 }
 
-function compareNumeric(left: number | bigint, right: number | bigint): number {
-  if (typeof left === "bigint" && typeof right === "bigint") {
-    return left < right ? -1 : left > right ? 1 : 0;
-  }
-  const leftNumber = Number(left);
-  const rightNumber = Number(right);
-  return leftNumber < rightNumber ? -1 : leftNumber > rightNumber ? 1 : 0;
+function isRange(type: string | undefined): boolean {
+  return type === "numericRange" || type === "commaSeparatedNumericRanges"
+    || type === "dateRange" || type === "commaSeparatedDateRanges"
+    || type === "dateTimeRange" || type === "commaSeparatedDateTimeRanges";
 }
 
-function isCollectionCondition(field: SchemaField<AnyModel, string>): boolean {
-  return (
-    field.secondaryType === "commaSeparatedStrings" ||
-    field.secondaryType === "commaSeparatedNumbers" ||
-    field.secondaryType === "commaSeparatedDates" ||
-    field.secondaryType === "commaSeparatedDateTimes"
-  );
-}
-
-function isDateRangeSecondaryType(secondaryType: string | undefined): boolean {
-  return secondaryType === "dateRange" || secondaryType === "commaSeparatedDateRanges";
-}
-
-function isDateTimeRangeSecondaryType(secondaryType: string | undefined): boolean {
-  return secondaryType === "dateTimeRange" || secondaryType === "commaSeparatedDateTimeRanges";
-}
-
-function isRangeSecondaryType(secondaryType: string | undefined): boolean {
-  return (
-    secondaryType === "numericRange" ||
-    secondaryType === "commaSeparatedNumericRanges" ||
-    isDateRangeSecondaryType(secondaryType) ||
-    isDateTimeRangeSecondaryType(secondaryType)
-  );
-}
-
-function normalizeScalarValues(
-  field: SchemaField<AnyModel, string>,
-  condition: Condition<AnyModel, string>,
-  data: PreparedStoreData<AnyModel>,
-): NormalizedScalar[] {
-  const values = condition.values ?? [];
-  return values.map((value) =>
-    normalizeConditionValue(field, value, data.normalizationProfile),
-  );
-}
-
-function normalizeCollectionConditionValues(
-  field: SchemaField<AnyModel, string>,
-  condition: Condition<AnyModel, string>,
-  data: PreparedStoreData<AnyModel>,
-): NormalizedScalar[] {
-  const values = condition.values ?? [];
-  return values.map((value) => normalizeConditionValue(field, value, data.normalizationProfile));
-}
-
-function parseCollectionConditionTokens(rawValue: unknown): readonly unknown[] {
-  if (typeof rawValue !== "string") {
-    return [rawValue];
-  }
-
-  const tokens = rawValue
-    .split(",")
-    .map((token) => token.trim())
-    .filter((token) => token.length > 0);
-
-  return tokens.length === 0 ? [rawValue] : tokens;
-}
-
-function normalizeCollectionEqualityKeys(
-  field: SchemaField<AnyModel, string>,
-  condition: Condition<AnyModel, string>,
-  data: PreparedStoreData<AnyModel>,
-): { readonly keys: readonly string[]; readonly includesNull: boolean } {
-  const values = condition.values ?? [];
-  const keys: string[] = [];
-  let includesNull = false;
-
-  for (const rawValue of values) {
-    if (rawValue === null || rawValue === undefined) {
-      includesNull = true;
-      continue;
-    }
-
-    const normalizedTokens = parseCollectionConditionTokens(rawValue).map((token) =>
-      normalizeConditionValue(field, token, data.normalizationProfile)
-    );
-    const encodedKey = normalizedTokens
-      .map((token) => encodeNormalizedScalar(token))
-      .join("|");
-    keys.push(encodedKey);
-  }
-
-  return { keys, includesNull };
-}
-
-function resolveEquality(
-  index: FieldIndex,
-  values: readonly NormalizedScalar[],
-): Set<number> {
-  const groups = values.map((value) => index.equality.get(encodeNormalizedScalar(value)) ?? []);
-  return union(groups);
-}
-
-function resolveNumericComparison(
-  index: FieldIndex,
-  lowerBound: number | bigint | undefined,
-  upperBound: number | bigint | undefined,
-  lowerInclusive: boolean,
-  upperInclusive: boolean,
-): Set<number> {
-  const groups: number[][] = [];
-  for (const entry of index.numericOrder) {
-    if (lowerBound !== undefined) {
-      const lowerComparison = compareNumeric(entry.key, lowerBound);
-      if (lowerComparison < 0 || (lowerComparison === 0 && !lowerInclusive)) {
-        continue;
-      }
-    }
-    if (upperBound !== undefined) {
-      const upperComparison = compareNumeric(entry.key, upperBound);
-      if (upperComparison > 0 || (upperComparison === 0 && !upperInclusive)) {
-        continue;
-      }
-    }
-    groups.push([...entry.rowIds]);
-  }
-  return union(groups);
-}
-
-function resolveNotContainsCollection(
-  condition: Condition<AnyModel, string>,
-  field: SchemaField<AnyModel, string>,
-  index: FieldIndex,
-  allRows: Set<number>,
-  data: PreparedStoreData<AnyModel>,
-): Set<number> {
-  if (condition.values === undefined || condition.values.length === 0) {
-    throw new QueryValidationError(
-      `NOT_CONTAINS condition on "${condition.field}" requires values.`,
-      "QUERY_INVALID_CONDITION",
-    );
-  }
-  const normalizedValues = normalizeCollectionConditionValues(field, condition, data);
-  const forbiddenRows = resolveEquality(index, normalizedValues);
-  return subtract(allRows, forbiddenRows);
-}
-
-function resolveNotEqualCollection(
-  condition: Condition<AnyModel, string>,
-  field: SchemaField<AnyModel, string>,
-  index: FieldIndex,
-  allRows: Set<number>,
-  data: PreparedStoreData<AnyModel>,
-): Set<number> {
-  const { keys, includesNull } = normalizeCollectionEqualityKeys(field, condition, data);
-  const forbiddenRows = new Set<number>();
-
-  for (const key of keys) {
-    const rows = index.collectionFullKeys.get(key);
-    if (rows !== undefined) {
-      for (const rowId of rows) {
-        forbiddenRows.add(rowId);
-      }
-    }
-  }
-
-  if (includesNull) {
-    for (const row of data.normalizedRows) {
-      const stored = row.values.get(field.name as FieldName<AnyModel>);
-      if (stored?.collectionValues === undefined) {
-        forbiddenRows.add(row.id);
-      }
-    }
-  }
-
-  return subtract(allRows, forbiddenRows);
-}
-
-function hasCollectionMatch(stored: NormalizedFieldValue, target: NormalizedScalar): boolean {
-  const values = stored.collectionValues;
-  if (values === undefined) {
-    return false;
-  }
-  return values.some((value) => value === target);
-}
-
-function parseRangeQueryPoint(
+function rangePoint(
   field: SchemaField<AnyModel, string>,
   value: unknown,
-  data: PreparedStoreData<AnyModel>,
-): { readonly prefix: string; readonly point: number | bigint } {
-  if (typeof value === "number" || typeof value === "bigint") {
-    return { prefix: "", point: value };
-  }
-
+  profile: NormalizationProfile,
+): { prefix: string; point: number | bigint } {
+  if (typeof value === "number" || typeof value === "bigint") return { prefix: "", point: value };
   if (typeof value !== "string") {
     throw new QueryValidationError(
       `Range query value for field "${field.name}" must be string/number/bigint.`,
-      "QUERY_INVALID_CONDITION",
-      { field: field.name, valueType: typeof value },
+      "QUERY_INVALID_CONDITION", { field: field.name, valueType: typeof value },
     );
   }
-
+  const date = field.secondaryType === "dateRange" || field.secondaryType === "commaSeparatedDateRanges";
+  const dateTime = field.secondaryType === "dateTimeRange" || field.secondaryType === "commaSeparatedDateTimeRanges";
   if (value.includes("->")) {
-    if (isDateRangeSecondaryType(field.secondaryType)) {
-      const parsed = parseDateRangeValue(value, field.format);
-      return { prefix: "", point: parsed.lower };
-    }
-    if (isDateTimeRangeSecondaryType(field.secondaryType)) {
-      const parsed = parseDateTimeRangeValue(value, field.format);
-      return { prefix: "", point: parsed.lower };
-    }
-    const parsed = parseNumericRangeValue(
-      value,
-      data.normalizationProfile,
-      field.numericStartPos ?? 0,
-    );
+    if (date) return { prefix: "", point: parseDateRangeValue(value, field.format).lower };
+    if (dateTime) return { prefix: "", point: parseDateTimeRangeValue(value, field.format).lower };
+    const parsed = parseNumericRangeValue(value, profile, field.numericStartPos ?? 0);
     return { prefix: parsed.prefix, point: parsed.lower };
   }
-
-  if (isDateRangeSecondaryType(field.secondaryType)) {
-    return { prefix: "", point: normalizeDateToEpochDay(value, field.format) };
-  }
-  if (isDateTimeRangeSecondaryType(field.secondaryType)) {
-    return { prefix: "", point: normalizeDateTimeToEpochSecond(value, field.format) };
-  }
-
-  const startPos = Math.max(0, field.numericStartPos ?? 0);
-  const prefix = startPos > 0 ? value.slice(0, startPos) : "";
-  const numericPart = startPos > 0 ? value.slice(startPos) : value;
-
-  const normalizedPoint = data.normalizationProfile === NormalizationProfile.JAVA
-    ? normalizeJavaLongKey(numericPart)
-    : normalizeNativeNumber(numericPart);
-  if (typeof normalizedPoint !== "number" && typeof normalizedPoint !== "bigint") {
+  if (date) return { prefix: "", point: normalizeDateToEpochDay(value, field.format) };
+  if (dateTime) return { prefix: "", point: normalizeDateTimeToEpochSecond(value, field.format) };
+  const start = Math.max(0, field.numericStartPos ?? 0);
+  const point = profile === NormalizationProfile.JAVA
+    ? normalizeJavaLongKey(start ? value.slice(start) : value)
+    : normalizeNativeNumber(start ? value.slice(start) : value);
+  if (typeof point !== "number" && typeof point !== "bigint") {
     throw new QueryValidationError(
       `Range query value for field "${field.name}" must resolve to a numeric point.`,
-      "QUERY_INVALID_CONDITION",
-      { field: field.name, value },
+      "QUERY_INVALID_CONDITION", { field: field.name, value },
     );
   }
-
-  return { prefix, point: normalizedPoint };
+  return { prefix: start ? value.slice(0, start) : "", point };
 }
 
-function rangeContainsPoint(
-  range: NormalizedNumericRange,
-  prefix: string,
-  point: number | bigint,
-): boolean {
-  if (range.prefix !== prefix) {
-    return false;
+function select<T extends object>(
+  data: PreparedStoreData<T>, execution: ExecutionIndex, condition: Condition<T>, work?: IndexWork,
+): Selection {
+  const schemaField = data.schema.fieldMap.get(condition.field);
+  if (!schemaField) {
+    throw new QueryValidationError(`Unknown field "${condition.field}" in condition.`,
+      "QUERY_INVALID_CONDITION", { field: condition.field });
   }
-  return compareNumeric(point, range.lower) >= 0 && compareNumeric(point, range.upper) <= 0;
-}
-
-function resolveNumericRangeCandidates(
-  field: SchemaField<AnyModel, string>,
-  condition: Condition<AnyModel, string>,
-  index: FieldIndex,
-  universe: Set<number>,
-  data: PreparedStoreData<AnyModel>,
-): Set<number> {
-  const points = (condition.values ?? []).map((value) => parseRangeQueryPoint(field, value, data));
-  const matches = new Set<number>();
-
-  for (const entry of index.rangeEntries) {
-    const matchesEither = points.some((point) =>
-      entry.ranges.some((range) => rangeContainsPoint(range, point.prefix, point.point))
-    );
-    const matchesAll = points.every((point) =>
-      entry.ranges.some((range) => rangeContainsPoint(range, point.prefix, point.point))
-    );
-
-    if (condition.operator === Operator.CONTAINS_EITHER && matchesEither) {
-      matches.add(entry.rowId);
-    } else if (condition.operator === Operator.CONTAINS_ALL && matchesAll) {
-      matches.add(entry.rowId);
-    } else if (condition.operator === Operator.NOT_CONTAINS && !matchesEither) {
-      matches.add(entry.rowId);
-    }
-  }
-
-  if (condition.operator === Operator.NOT_CONTAINS) {
-    for (const rowId of universe) {
-      const hasRangeEntry = index.rangeEntries.some((entry) => entry.rowId === rowId);
-      if (!hasRangeEntry) {
-        matches.add(rowId);
-      }
-    }
-  }
-
-  return matches;
-}
-
-function evaluateNumericRangeCondition(
-  stored: NormalizedFieldValue,
-  field: SchemaField<AnyModel, string>,
-  condition: Condition<AnyModel, string>,
-  data: PreparedStoreData<AnyModel>,
-): boolean {
-  const ranges = stored.rangeValues;
-  if (ranges === undefined || ranges.length === 0) {
-    return false;
-  }
-
-  const points = (condition.values ?? []).map((value) => parseRangeQueryPoint(field, value, data));
-  const matchesEither = points.some((point) =>
-    ranges.some((range) => rangeContainsPoint(range, point.prefix, point.point))
-  );
-  const matchesAll = points.every((point) =>
-    ranges.some((range) => rangeContainsPoint(range, point.prefix, point.point))
-  );
-
-  if (condition.operator === Operator.CONTAINS_EITHER) {
-    return matchesEither;
-  }
-  if (condition.operator === Operator.CONTAINS_ALL) {
-    return matchesAll;
-  }
-  if (condition.operator === Operator.NOT_CONTAINS) {
-    return !matchesEither;
-  }
-  return false;
-}
-
-function evaluateConditionFallback(
-  condition: Condition<AnyModel, string>,
-  row: NormalizedRow<AnyModel>,
-  field: SchemaField<AnyModel, string>,
-  data: PreparedStoreData<AnyModel>,
-): boolean {
-  const storedValue = row.values.get(condition.field as FieldName<AnyModel>);
-  if (storedValue === undefined) {
-    return false;
-  }
-
-  if (
-    isRangeSecondaryType(field.secondaryType) &&
-    (
-      condition.operator === Operator.CONTAINS_EITHER ||
-      condition.operator === Operator.CONTAINS_ALL ||
-      condition.operator === Operator.NOT_CONTAINS
-    )
-  ) {
-    return evaluateNumericRangeCondition(storedValue, field, condition, data);
-  }
-
-  if (condition.operator === Operator.BETWEEN) {
-    const lower = normalizeConditionValue(field, condition.lowerValue, data.normalizationProfile);
-    const upper = normalizeConditionValue(field, condition.upperValue, data.normalizationProfile);
-    if (storedValue.scalar === undefined || lower === null || upper === null) {
-      return false;
-    }
-    if ((typeof storedValue.scalar !== "number" && typeof storedValue.scalar !== "bigint") ||
-      (typeof lower !== "number" && typeof lower !== "bigint") ||
-      (typeof upper !== "number" && typeof upper !== "bigint")) {
-      return false;
-    }
-    return compareNumeric(storedValue.scalar, lower) >= 0 &&
-      compareNumeric(storedValue.scalar, upper) <= 0;
-  }
-
-  const normalizedValues = normalizeScalarValues(field, condition, data);
-  switch (condition.operator) {
-    case Operator.EQUAL:
-      return normalizedValues.some((value) => storedValue.scalar === value);
-    case Operator.NOT_EQUAL:
-      if (isCollectionCondition(field)) {
-        const { keys, includesNull } = normalizeCollectionEqualityKeys(field, condition, data);
-        const storedCollection = storedValue.collectionValues;
-        if (storedCollection === undefined) {
-          return !includesNull;
-        }
-        const storedKey = storedCollection.map((value) => encodeNormalizedScalar(value)).join("|");
-        return keys.every((key) => key !== storedKey);
-      }
-      return normalizedValues.every((value) => storedValue.scalar !== value);
-    case Operator.LESS_THAN:
-    case Operator.LESS_THAN_EQUAL:
-    case Operator.GREATER_THAN:
-    case Operator.GREATER_THAN_EQUAL: {
-      if (storedValue.scalar === undefined || normalizedValues[0] === undefined) {
-        return false;
-      }
-      const right = normalizedValues[0];
-      if (
-        (typeof storedValue.scalar !== "number" && typeof storedValue.scalar !== "bigint") ||
-        (typeof right !== "number" && typeof right !== "bigint")
-      ) {
-        return false;
-      }
-      const comparison = compareNumeric(storedValue.scalar, right);
-      if (condition.operator === Operator.LESS_THAN) {
-        return comparison < 0;
-      }
-      if (condition.operator === Operator.LESS_THAN_EQUAL) {
-        return comparison <= 0;
-      }
-      if (condition.operator === Operator.GREATER_THAN) {
-        return comparison > 0;
-      }
-      return comparison >= 0;
-    }
-    case Operator.CONTAINS_EITHER:
-      return normalizedValues.some((value) => hasCollectionMatch(storedValue, value));
-    case Operator.CONTAINS_ALL:
-      return normalizedValues.every((value) => hasCollectionMatch(storedValue, value));
-    case Operator.CONTAINS_EITHER_INCLUDING_NULL:
-      return storedValue.scalar === null || storedValue.collectionValues === undefined
-        ? normalizedValues.some((value) => value === null)
-        : normalizedValues.some((value) => hasCollectionMatch(storedValue, value));
-    case Operator.NOT_CONTAINS:
-      return normalizedValues.every((value) => !hasCollectionMatch(storedValue, value));
-    default:
-      return false;
-  }
-}
-
-function resolveConditionCandidates(
-  data: PreparedStoreData<AnyModel>,
-  condition: Condition<AnyModel, string>,
-  universe: Set<number>,
-): Set<number> {
-  const field = data.schema.fieldMap.get(condition.field as FieldName<AnyModel>) as
-    | SchemaField<AnyModel, string>
-    | undefined;
-
-  if (field === undefined) {
-    throw new QueryValidationError(
-      `Unknown field "${condition.field}" in condition.`,
-      "QUERY_INVALID_CONDITION",
-      { field: condition.field },
-    );
-  }
-
-  if (field.ignoreIndex === true) {
+  if (schemaField.ignoreIndex) {
     throw new QueryValidationError(
       `Field "${condition.field}" is marked ignoreIndex and cannot be used in search conditions.`,
-      "QUERY_INVALID_CONDITION",
-      { field: condition.field, operator: condition.operator },
+      "QUERY_INVALID_CONDITION", { field: condition.field, operator: condition.operator },
     );
   }
-
+  const field = schemaField as SchemaField<AnyModel, string>;
   validateOperatorCompatibility(field, condition.operator);
+  const index = execution.fields.get(condition.field)!;
+  const level = index.nodes.length ? execution.nodes[index.nodes[0]!]!.level : 0;
+  const result = (ids: Set<number>, excluded = false): Selection => ({ ids, excluded, field: index, level });
+  const normalize = (value: unknown) => normalizeConditionValue(field, value, data.normalizationProfile);
+  const lookup = (values: readonly NormalizedScalar[]) =>
+    union(values.map((value) => index.equality.get(scalarKey(value)) ?? []), work);
+  const type = field.secondaryType;
 
-  const index = data.indexes.get(condition.field as FieldName<AnyModel>);
-  if (index === undefined) {
-    return new Set<number>(universe);
+  if (isRange(type) && (condition.operator === Operator.CONTAINS_EITHER
+    || condition.operator === Operator.CONTAINS_ALL || condition.operator === Operator.NOT_CONTAINS)) {
+    const groups = (condition.values ?? []).map((value) => {
+      const { prefix, point } = rangePoint(field, value, data.normalizationProfile);
+      return index.intervals.get(prefix)?.containing(point, work) ?? new Set<number>();
+    });
+    if (condition.operator === Operator.CONTAINS_ALL) {
+      return result(groups.reduce(intersection, groups[0] ?? new Set<number>()));
+    }
+    const matches = union(groups, work);
+    if (condition.operator === Operator.NOT_CONTAINS) {
+      // Missing ranges were rejected by the former residual predicate.
+      return result(new Set(index.rangeNodes.filter((id) => !matches.has(id))));
+    }
+    return result(matches);
   }
 
+  if (condition.operator === Operator.BETWEEN
+    || condition.operator === Operator.LESS_THAN || condition.operator === Operator.LESS_THAN_EQUAL
+    || condition.operator === Operator.GREATER_THAN || condition.operator === Operator.GREATER_THAN_EQUAL) {
+    const between = condition.operator === Operator.BETWEEN;
+    const first = normalize(between ? condition.lowerValue : condition.values?.[0]);
+    const second = between ? normalize(condition.upperValue) : first;
+    if ((typeof first !== "number" && typeof first !== "bigint")
+      || (typeof second !== "number" && typeof second !== "bigint")) {
+      throw new QueryValidationError(between
+        ? `BETWEEN on field "${condition.field}" requires numeric bounds.`
+        : `Operator "${condition.operator}" on field "${condition.field}" requires one numeric value.`,
+      "QUERY_INVALID_CONDITION");
+    }
+    const entries = index.numeric;
+    const key = (entry: typeof entries[number]) => entry.key;
+    let start = 0;
+    let end = entries.length;
+    if (between || condition.operator === Operator.GREATER_THAN || condition.operator === Operator.GREATER_THAN_EQUAL) {
+      start = bound(entries, first, key, condition.operator === Operator.GREATER_THAN, work);
+    }
+    if (between || condition.operator === Operator.LESS_THAN || condition.operator === Operator.LESS_THAN_EQUAL) {
+      end = bound(entries, second, key, between || condition.operator === Operator.LESS_THAN_EQUAL, work);
+    }
+    const ids = new Set<number>();
+    for (let i = start; i < end; i++) {
+      if (work) work.keysVisited += 1;
+      for (const id of entries[i]!.nodeIds) {
+        if (work) work.postingEntriesVisited += 1;
+        ids.add(id);
+      }
+    }
+    return result(ids);
+  }
+
+  const values = (condition.values ?? []).map(normalize);
   switch (condition.operator) {
-    case Operator.EQUAL: {
-      const values = normalizeScalarValues(field, condition, data);
-      return resolveEquality(index, values);
-    }
+    case Operator.EQUAL:
+      // Preserve 1.x scalar equality semantics; collection membership has its own operators.
+      return result(field.secondaryType?.startsWith("commaSeparated") ? new Set() : lookup(values));
     case Operator.NOT_EQUAL: {
-      if (isCollectionCondition(field)) {
-        return resolveNotEqualCollection(condition, field, index, universe, data);
-      }
-      const equalRows = resolveEquality(index, normalizeScalarValues(field, condition, data));
-      return subtract(universe, equalRows);
-    }
-    case Operator.LESS_THAN:
-    case Operator.LESS_THAN_EQUAL:
-    case Operator.GREATER_THAN:
-    case Operator.GREATER_THAN_EQUAL: {
-      const [value] = normalizeScalarValues(field, condition, data);
-      if (value === undefined || (typeof value !== "number" && typeof value !== "bigint")) {
-        throw new QueryValidationError(
-          `Operator "${condition.operator}" on field "${condition.field}" requires one numeric value.`,
-          "QUERY_INVALID_CONDITION",
-        );
-      }
-      if (condition.operator === Operator.LESS_THAN) {
-        return resolveNumericComparison(index, undefined, value, false, false);
-      }
-      if (condition.operator === Operator.LESS_THAN_EQUAL) {
-        return resolveNumericComparison(index, undefined, value, false, true);
-      }
-      if (condition.operator === Operator.GREATER_THAN) {
-        return resolveNumericComparison(index, value, undefined, false, false);
-      }
-      return resolveNumericComparison(index, value, undefined, true, false);
-    }
-    case Operator.BETWEEN: {
-      const lower = normalizeConditionValue(field, condition.lowerValue, data.normalizationProfile);
-      const upper = normalizeConditionValue(field, condition.upperValue, data.normalizationProfile);
-      if (
-        (typeof lower !== "number" && typeof lower !== "bigint") ||
-        (typeof upper !== "number" && typeof upper !== "bigint")
-      ) {
-        throw new QueryValidationError(
-          `BETWEEN on field "${condition.field}" requires numeric bounds.`,
-          "QUERY_INVALID_CONDITION",
-        );
-      }
-      return resolveNumericComparison(index, lower, upper, true, true);
-    }
-    case Operator.CONTAINS_EITHER: {
-      if (isRangeSecondaryType(field.secondaryType)) {
-        return resolveNumericRangeCandidates(field, condition, index, universe, data);
-      }
-      if (!isCollectionCondition(field)) {
-        throw new QueryValidationError(
-          `CONTAINS_EITHER is supported only for collection fields. Field "${condition.field}" is not one.`,
-          "QUERY_INVALID_CONDITION",
-        );
-      }
-      return resolveEquality(index, normalizeCollectionConditionValues(field, condition, data));
-    }
-    case Operator.CONTAINS_ALL: {
-      if (isRangeSecondaryType(field.secondaryType)) {
-        return resolveNumericRangeCandidates(field, condition, index, universe, data);
-      }
-      if (!isCollectionCondition(field)) {
-        throw new QueryValidationError(
-          `CONTAINS_ALL is supported only for collection fields. Field "${condition.field}" is not one.`,
-          "QUERY_INVALID_CONDITION",
-        );
-      }
-      const tokenGroups = normalizeCollectionConditionValues(field, condition, data).map((value) =>
-        toSet(index.equality.get(encodeNormalizedScalar(value)) ?? [])
-      );
-      const firstGroup = tokenGroups[0];
-      if (firstGroup === undefined) {
-        return new Set<number>();
-      }
-      let result = firstGroup;
-      for (let i = 1; i < tokenGroups.length; i += 1) {
-        const group = tokenGroups[i];
-        if (group !== undefined) {
-          result = intersect(result, group);
+      if (!isCollection(type)) return result(lookup(values), true);
+      const groups: Iterable<number>[] = [];
+      for (const value of condition.values ?? []) {
+        if (value === null || value === undefined) {
+          groups.push(index.missing);
+        } else {
+          const tokens = typeof value === "string"
+            ? value.split(",").map((token) => token.trim()).filter(Boolean) : [value];
+          const key = collectionKey((tokens.length ? tokens : [value]).map(normalize));
+          groups.push(index.fullKeys.get(key) ?? []);
         }
       }
-      return result;
+      return result(union(groups, work), true);
     }
-    case Operator.CONTAINS_EITHER_INCLUDING_NULL: {
-      if (!isCollectionCondition(field)) {
-        throw new QueryValidationError(
-          `CONTAINS_EITHER_INCLUDING_NULL is supported only for collection fields. Field "${condition.field}" is not one.`,
-          "QUERY_INVALID_CONDITION",
-        );
-      }
-      const tokens = normalizeCollectionConditionValues(field, condition, data);
-      const containsNull = tokens.some((token) => token === null);
-      const nonNullRows = resolveEquality(index, tokens.filter((token) => token !== null));
-      if (!containsNull) {
-        return nonNullRows;
-      }
-      const nullRows = new Set<number>(index.equality.get(encodeNormalizedScalar(null)) ?? []);
-      for (const row of data.normalizedRows) {
-        const value = row.values.get(condition.field as FieldName<AnyModel>);
-        if (value?.collectionValues === undefined) {
-          nullRows.add(row.id);
-        }
-      }
-      for (const rowId of nullRows) {
-        nonNullRows.add(rowId);
-      }
-      return nonNullRows;
-    }
+    case Operator.CONTAINS_EITHER:
+    case Operator.CONTAINS_EITHER_INCLUDING_NULL:
+    case Operator.CONTAINS_ALL:
     case Operator.NOT_CONTAINS: {
-      if (isRangeSecondaryType(field.secondaryType)) {
-        return resolveNumericRangeCandidates(field, condition, index, universe, data);
-      }
-      if (!isCollectionCondition(field)) {
+      if (!isCollection(type)) {
         throw new QueryValidationError(
-          `NOT_CONTAINS is supported only for collection fields. Field "${condition.field}" is not one.`,
+          `${condition.operator} is supported only for collection fields. Field "${condition.field}" is not one.`,
           "QUERY_INVALID_CONDITION",
         );
       }
-      return resolveNotContainsCollection(condition, field, index, universe, data);
+      if (condition.operator === Operator.CONTAINS_ALL) {
+        const groups = values.map((value) => new Set(index.equality.get(scalarKey(value)) ?? []));
+        return result(groups.reduce(intersection, groups[0] ?? new Set<number>()));
+      }
+      const matches = lookup(values);
+      if (condition.operator === Operator.CONTAINS_EITHER_INCLUDING_NULL && values.includes(null)) {
+        for (const id of index.missing) matches.add(id);
+      }
+      return result(matches, condition.operator === Operator.NOT_CONTAINS);
     }
     default:
-      return new Set<number>(universe);
+      return result(new Set());
   }
+}
+
+function ordered(index: ExecutionIndex, ids: Iterable<number>): number[] {
+  return [...ids].sort((a, b) => index.nodes[a]!.start - index.nodes[b]!.start);
+}
+
+function descendants(
+  index: ExecutionIndex, ancestors: readonly number[], candidates: readonly number[], work?: IndexWork,
+): number[] {
+  const result: number[] = [];
+  const start = (id: number) => index.nodes[id]!.start;
+  if (ancestors.length <= candidates.length) {
+    for (const id of ancestors) {
+      const ancestor = index.nodes[id]!;
+      let cursor = bound(candidates, ancestor.start, start, false, work);
+      while (cursor < candidates.length && start(candidates[cursor]!) < ancestor.end) {
+        if (work) work.postingEntriesVisited += 1;
+        result.push(candidates[cursor++]!);
+      }
+    }
+  } else {
+    for (const id of candidates) {
+      const cursor = bound(ancestors, start(id), start, true, work) - 1;
+      if (cursor >= 0 && index.nodes[ancestors[cursor]!]!.end > start(id)) result.push(id);
+      if (work) work.postingEntriesVisited += 1;
+    }
+  }
+  return result;
+}
+
+export function executeSearchIds<T extends object>(
+  data: PreparedStoreData<T>, conditions: readonly Condition<T>[], work?: IndexWork, limit?: number,
+): number[] {
+  validateConditions(conditions);
+  const index = getExecutionIndex(data);
+  let candidates: number[] | undefined;
+  let level = 0;
+  // Resolve in caller order to retain validation/empty-result precedence.
+  for (const condition of conditions) {
+    const next = select(data, index, condition, work);
+    if (candidates === undefined) {
+      candidates = next.excluded
+        ? next.field.nodes.filter((id) => !next.ids.has(id))
+        : conditions.length === 1 ? [...next.ids] : ordered(index, next.ids);
+      level = next.level;
+    } else if (level === next.level) {
+      candidates = candidates.filter((id) => next.ids.has(id) !== next.excluded);
+    } else if (level < next.level) {
+      const eligible = next.excluded ? next.field.nodes : ordered(index, next.ids);
+      candidates = descendants(index, candidates, eligible, work);
+      if (next.excluded) candidates = candidates.filter((id) => !next.ids.has(id));
+      level = next.level;
+    } else {
+      const matches = descendants(index, ordered(index, next.ids), candidates, work);
+      if (next.excluded) {
+        const rejected = new Set(matches);
+        candidates = candidates.filter((id) => !rejected.has(id));
+      } else candidates = matches;
+    }
+    if (!candidates.length) return [];
+  }
+  return terminalRows(index, candidates ?? [], work, limit);
 }
 
 export function executeSearch<T extends object>(
-  data: PreparedStoreData<T>,
-  conditions: readonly Condition<T>[],
-  limit?: number,
+  data: PreparedStoreData<T>, conditions: readonly Condition<T>[], limit?: number, work?: IndexWork,
 ): readonly T[] {
-  validateConditions(conditions);
-
-  const universe = new Set<number>(data.rowIds);
-  let candidates = new Set<number>(universe);
-
-  const asObjectData = data as unknown as PreparedStoreData<AnyModel>;
-  const asObjectConditions = conditions as unknown as Condition<AnyModel, string>[];
-
-  for (const condition of asObjectConditions) {
-    const conditionCandidates = resolveConditionCandidates(asObjectData, condition, universe);
-    candidates = intersect(candidates, conditionCandidates);
-    if (candidates.size === 0) {
-      return [];
-    }
-  }
-
-  const orderedRows: T[] = [];
-  for (const rowId of data.rowIds) {
-    if (!candidates.has(rowId)) {
-      continue;
-    }
-    const row = data.rowById.get(rowId);
-    if (row === undefined) {
-      continue;
-    }
-
-    const passesFallback = asObjectConditions.every((condition) => {
-      const field = asObjectData.schema.fieldMap.get(condition.field as FieldName<AnyModel>) as
-        | SchemaField<AnyModel, string>
-        | undefined;
-      if (field === undefined) {
-        return false;
-      }
-      return evaluateConditionFallback(
-        condition,
-        row as unknown as NormalizedRow<AnyModel>,
-        field,
-        asObjectData,
-      );
-    });
-    if (!passesFallback) {
-      continue;
-    }
-
-    orderedRows.push(row.source);
-    if (limit !== undefined && limit > 0 && orderedRows.length >= limit) {
-      break;
-    }
-  }
-
-  if (limit === undefined || limit > 0) {
-    return orderedRows;
-  }
-  return [];
+  const ids = executeSearchIds(data, conditions, work, limit);
+  const selected = limit === undefined ? ids : limit <= 0 ? [] : ids.slice(0, Math.ceil(limit));
+  return selected.map((id) => {
+    if (work) work.sourceRowsVisited += 1;
+    return data.rows[id]!;
+  });
 }
 
-export { buildPreparedStoreData };
+export { buildPreparedStoreData } from "./index-builder.js";

@@ -80,5 +80,22 @@ Status labels:
 
 ## Blocker gate tracking
 
+### Optimized execution evidence (2026-10-24)
+
+Behavioral fixture status above must not be confused with proof of an
+algorithm or a cross-language speed claim. Version 1.2.0 adds separate evidence
+captured from the 1.1.1-search.0 development candidate:
+
+| Surface | Behavioral compatibility | Algorithm implementation | Performance evidence |
+|---|---|---|---|
+| F06/F07 trie and inverted indexes | Existing tests plus duplicate/order/inspection tests pass | DFS node postings drive production queries; legacy row views are lazy | Selective equality/combined-query comparison and work counts |
+| Q03-Q07 numeric bounds | JAVA/NATIVE and existing operator fixtures pass | Binary-search bound slices, no complete distinct-key scan | 100k-key comparison-count gate and isolated timing pairs |
+| F09 ranges | Numeric/date/date-time and collection fixtures pass | Prefix-partitioned balanced interval trees | 100k disjoint-interval pruning gate and isolated timing pairs |
+| F14-F20 keyword/dictionary | Existing TS behavior and Java fixture corpus pass; universal Java semantic parity is not claimed | Cached token postings and trie-based one-edit lookup; TS scoring retained | Warm keyword old/new timings and snapshot reuse tests |
+
+See [search execution](./search-execution.md) for source revisions, limitations,
+the Java `minimumMatch` distinction, and complete measurements. No Java-versus-TS
+or Redis performance conclusion follows from these TS-version comparisons.
+
 Compatibility blockers and closure criteria are tracked in
 [blocker-gates.md](./blocker-gates.md).

@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.0] - 2026-10-24
+
+### Changed
+- Execute structured queries through DFS-bound trie-node postings, binary-search
+  numeric bounds, and prefix-partitioned interval trees.
+- Materialize qualifying records selectively; apply source-order limits without
+  expanding every matching path.
+- Reuse snapshot-scoped keyword postings/dictionaries and prune one-edit trie
+  searches while preserving existing TypeScript best/minimum-match behavior.
+- Materialize legacy prepared-data inspection views lazily.
+
+### Fixed
+- Distinguish collection identities that would collide when delimiter-joined.
+- Avoid lossy Number coercion in mixed number/bigint ordering.
+
+### Added
+- Algorithmic work-count tests and reproducible old/new benchmark comparison.
+- [Execution and compatibility documentation](./docs/search-execution.md).
+
 ## [1.1.0] - 2026-10-23
 
 ### Added
