@@ -51,7 +51,7 @@
     "test:oracle:scale": "vitest run src/testing/oracle-scale-differential.test.ts",
     "test:oracle:live": "npm run build && node scripts/java-live-contract-check.mjs",
     "test:algorithm": "vitest run src/store/optimized-search.test.ts",
-    "test:parity:gate": "npm run build && npm run typecheck && npm run test:oracle:full && npm run test:oracle:scale && vitest run src/query/operator-parity-matrix.test.ts && npm run accounting:java:check:ci && npm run bench:check:ci && npm run bench:java-ts:equivalent:ci",
+    "test:parity:gate": "npm run build && npm run typecheck && npm run test:oracle:full && npm run test:oracle:scale && vitest run src/query/operator-parity-matrix.test.ts && npm run accounting:java:check:ci && npm run bench:check:ci",
     "test:playwright": "npm run build && playwright test",
     "demo:repo": "npm run build && node examples/demo-repo/run-demo.mjs",
     "demo:decorators": "vitest run src/decorators/entity.test.ts",

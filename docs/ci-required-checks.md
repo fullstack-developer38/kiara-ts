@@ -29,3 +29,12 @@ Current accounting thresholds in CI are:
 
 - `missing <= 0`
 - `covered >= 448`
+
+## Local-only Java comparison checks
+
+These need a sibling `../kiara` checkout built with Maven, so CI does not run them:
+
+- `npm run test:oracle:live`: live Java-vs-TS behavior probe.
+- `npm run bench:java-ts:equivalent:ci`: Java-vs-TS equivalent-workload benchmark.
+
+Set `JAVA_SUREFIRE_REPORT` to use a Java build in a different location.

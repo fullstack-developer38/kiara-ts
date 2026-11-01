@@ -80,7 +80,7 @@ the stated scope, not to overall Java parity.
 | T3 | Lexical DFS suggestions versus Java breadth-first suggestions | Verified | Prediction traversal now uses Java-style BFS ordering and matches live Java ordering for `lig -> [light, lights, lighter]` |
 | T4 | Tokenization/case handling and dictionary eligibility differ | Verified | Bracket handling, case-sensitive/case-insensitive field behavior, and ignore-index dictionary exclusion now match Java live cases, including explicit one-edit eligibility gating surfaces |
 | V1 | Existing parity tests do not expose confirmed mismatches | Verified | `npm run test:oracle:live` now verifies 30 Java-vs-TS parity cases, and `npm run test:parity:gate` passes full oracle/operator/accounting gates (`448/448` covered, `0` missing) with zero unexplained mismatches |
-| V2 | Performance comparison is TS-to-TS, not Java-to-TS | Verified | Added equivalent-workload JVM/Node benchmark gate (`bench:java-ts:equivalent:ci`) with explicit ratio budgets and persisted evidence in `benchmarks/java-ts-equivalent-benchmark.json` |
+| V2 | Performance comparison is TS-to-TS, not Java-to-TS | Verified | Added local equivalent-workload JVM/Node benchmark (`bench:java-ts:equivalent:ci`, requires a built `../kiara` checkout) with explicit ratio budgets and persisted evidence in `benchmarks/java-ts-equivalent-benchmark.json` |
 | I1 | Examples still use the historical vendored candidate | Pending | Local-module benchmark/differential hooks verified; package/declaration/demo migration deferred to D2-D7 |
 
 ## Evidence and acceptance log
@@ -232,8 +232,8 @@ This is not a universal improvement:
   keyword behavior.
 - The live probe is the fast executable bridge; broad contract coverage is
   enforced by `test:parity:gate` through oracle corpus checks, operator matrix
-  checks, Java accounting (`448/448` covered), and the equivalent-workload
-  benchmark gate.
+  checks, and Java accounting (`448/448` covered). The equivalent-workload
+  Java-vs-TS benchmark is run locally because it needs a built Java checkout.
 
 ### B1 parity slice completed locally, 2026-11-01
 
@@ -365,8 +365,10 @@ This is not a universal improvement:
   [`benchmarks/java-ts-equivalent-benchmark.json`](../benchmarks/java-ts-equivalent-benchmark.json),
   including prepare-time, retained-memory, and per-workload warm p50/p95 metrics
   for 10k and 100k rows with explicit budget checks.
-- Updated release gating script to include this benchmark:
-  [`package.json`](../package.json) `test:parity:gate`.
+- This benchmark is a **local-only** check, not part of `test:parity:gate`.
+  It needs a sibling `../kiara` checkout built with Maven so the surefire report
+  can supply the Java classpath (override with `JAVA_SUREFIRE_REPORT`). CI only
+  checks out this repository.
 - Validation:
   - `npm run test:oracle:live` (30/30 parity probe cases now match Java)
   - `npm run bench:java-ts:equivalent:ci`
