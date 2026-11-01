@@ -9,6 +9,13 @@ uses trie-node matching, binary-search bounds, and interval trees. See
 [execution and measured results](./docs/search-execution.md) for the algorithms,
 compatibility boundaries, and comparison with 1.1.0.
 
+The [Java search parity plan and progress tracker](./docs/java-search-parity-plan.md)
+records confirmed algorithm/behavior gaps, acceptance criteria, and ongoing work.
+Full Java behavior and performance parity are not yet established.
+The next phases have separate [behavior implementation](./docs/java-behavior-parity-implementation-plan.md)
+and [documentation, examples and live-demo migration](./docs/java-parity-docs-demo-migration-plan.md)
+plans; neither changes current defaults or authorizes deployment.
+
 ## Install
 
 ```bash

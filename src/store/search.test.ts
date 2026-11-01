@@ -32,6 +32,11 @@ interface PrimitiveParityRow {
   longScore: string | number;
 }
 
+interface DuplicateParityRow {
+  id: number;
+  title: string;
+}
+
 const movieSchema = defineSchema<MovieRow>([
   textField("title", { caseInsensitive: true }),
   numberField("year"),
@@ -71,6 +76,36 @@ function preparedIgnoreIndexStore(): Store<HiddenMovieRow> {
   const store = new Store(schema, { normalizationProfile: NormalizationProfile.JAVA });
   store.loadRow({ title: "Cast Away", privateNotes: "internal island marker" });
   store.loadRow({ title: "Apollo 13", privateNotes: "internal moon marker" });
+  store.prepare();
+  return store;
+}
+
+function preparedDuplicateJavaStore(): Store<DuplicateParityRow> {
+  const schema = defineSchema<DuplicateParityRow>([
+    numberField("id"),
+    textField("title", { caseInsensitive: true }),
+  ]);
+  const store = new Store(schema, { normalizationProfile: NormalizationProfile.JAVA });
+  store.loadRows([
+    { id: 1, title: "alpha" },
+    { id: 1, title: "alpha" },
+    { id: 2, title: "beta" },
+  ]);
+  store.prepare();
+  return store;
+}
+
+function preparedDuplicateNativeStore(): Store<DuplicateParityRow> {
+  const schema = defineSchema<DuplicateParityRow>([
+    numberField("id"),
+    textField("title", { caseInsensitive: true }),
+  ]);
+  const store = new Store(schema, { normalizationProfile: NormalizationProfile.NATIVE });
+  store.loadRows([
+    { id: 1, title: "alpha" },
+    { id: 1, title: "alpha" },
+    { id: 2, title: "beta" },
+  ]);
   store.prepare();
   return store;
 }
@@ -144,6 +179,30 @@ describe("Store search", () => {
     expect(results.map((row) => row.title)).toEqual(["Cast Away", "Apollo 13"]);
   });
 
+  it("matches collection EQUAL against individual collection tokens", () => {
+    const store = preparedStore();
+    const results = store.search([
+      createCondition<MovieRow, "actors">({
+        field: "actors",
+        operator: Operator.EQUAL,
+        values: ["bill paxton"],
+      }),
+    ]);
+    expect(results.map((row) => row.title)).toEqual(["Apollo 13"]);
+  });
+
+  it("supports ordered comparison operators on text fields", () => {
+    const store = preparedStore();
+    const results = store.search([
+      createCondition<MovieRow, "title">({
+        field: "title",
+        operator: Operator.LESS_THAN,
+        values: ["cast away"],
+      }),
+    ]);
+    expect(results.map((row) => row.title)).toEqual(["Apollo 13", "Big"]);
+  });
+
   it("supports CONTAINS_EITHER and CONTAINS_ALL on collection fields", () => {
     const store = preparedStore();
     const either = store.search([
@@ -163,6 +222,26 @@ describe("Store search", () => {
       }),
     ]);
     expect(all.map((row) => row.title)).toEqual(["Apollo 13"]);
+  });
+
+  it("supports scalar CONTAINS operators with Java-compatible semantics", () => {
+    const store = preparedStore();
+    const either = store.search([
+      createCondition<MovieRow, "title">({
+        field: "title",
+        operator: Operator.CONTAINS_EITHER,
+        values: ["cast away", "apollo 13"],
+      }),
+    ]);
+    const all = store.search([
+      createCondition<MovieRow, "title">({
+        field: "title",
+        operator: Operator.CONTAINS_ALL,
+        values: ["cast away"],
+      }),
+    ]);
+    expect(either.map((row) => row.title)).toEqual(["Cast Away", "Apollo 13"]);
+    expect(all.map((row) => row.title)).toEqual(["Cast Away"]);
   });
 
   it("supports NOT_CONTAINS on collection fields", () => {
@@ -262,6 +341,30 @@ describe("Store search", () => {
     expect(root?.rowIds.length).toBe(2);
     expect(root?.childIds.size).toBe(1);
     expect(trie.nodes.length).toBe(5);
+  });
+
+  it("collapses exact duplicate source rows under java profile search", () => {
+    const store = preparedDuplicateJavaStore();
+    const results = store.search([
+      createCondition<DuplicateParityRow, "id">({
+        field: "id",
+        operator: Operator.EQUAL,
+        values: [1],
+      }),
+    ]);
+    expect(results).toEqual([{ id: 1, title: "alpha" }]);
+  });
+
+  it("retains duplicate source rows under native profile search", () => {
+    const store = preparedDuplicateNativeStore();
+    const results = store.search([
+      createCondition<DuplicateParityRow, "id">({
+        field: "id",
+        operator: Operator.EQUAL,
+        values: [1],
+      }),
+    ]);
+    expect(results).toEqual([{ id: 1, title: "alpha" }, { id: 1, title: "alpha" }]);
   });
 
   it("rejects structured queries on ignoreIndex fields", () => {

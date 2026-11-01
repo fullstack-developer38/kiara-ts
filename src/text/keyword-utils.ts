@@ -1,14 +1,16 @@
 export function sanitizeKeywordText(input: string): string {
   return input
-    .replace(/[^\p{L}\p{N}\s]+/gu, " ")
+    .replace(/[,.:;?+=\-*&^%$#@!~'"`"|\\/]/g, " ")
+    .replace(/[\[\]{}()]/g, "")
     .replace(/\s+/g, " ")
     .trim();
 }
 
-export function extractKeywordTokens(input: string): string[] {
-  const sanitized = sanitizeKeywordText(input).toLocaleLowerCase("en-US");
-  if (sanitized.length === 0) {
+export function extractKeywordTokens(input: string, caseInsensitive = true): string[] {
+  const sanitized = sanitizeKeywordText(input);
+  const normalized = caseInsensitive ? sanitized.toLocaleLowerCase("en-US") : sanitized;
+  if (normalized.length === 0) {
     return [];
   }
-  return sanitized.split(" ").filter((token) => token.length > 0);
+  return normalized.split(" ").filter((token) => token.length > 0);
 }

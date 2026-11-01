@@ -14,6 +14,12 @@
     { "id": "stemming:conflated", "input": "conflated", "expected": "conflat" },
     { "id": "stemming:hopping", "input": "hopping", "expected": "hop" },
     { "id": "stemming:allowance", "input": "allowance", "expected": "allow" },
-    { "id": "stemming:adoption", "input": "adoption", "expected": "adopt" }
+    { "id": "stemming:adoption", "input": "adoption", "expected": "adopt" },
+    { "id": "stemming:skies", "input": "skies", "expected": "sky" },
+    { "id": "stemming:dying", "input": "dying", "expected": "die" },
+    { "id": "stemming:lying", "input": "lying", "expected": "lie" },
+    { "id": "stemming:news", "input": "news", "expected": "news" },
+    { "id": "stemming:proceed", "input": "proceed", "expected": "proceed" },
+    { "id": "stemming:succeed", "input": "succeed", "expected": "succeed" }
   ]
 }

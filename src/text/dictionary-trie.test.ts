@@ -7,7 +7,7 @@ describe("DictionaryTrie", () => {
     const trie = new DictionaryTrie();
     trie.addWords(["airport", "airline", "airway", "apollo"]);
 
-    expect(trie.predict("air", 3)).toEqual(["airline", "airport", "airway"]);
+    expect(trie.predict("air", 3)).toEqual(["airway", "airline", "airport"]);
   });
 
   it("returns one-edit candidate for typo input", () => {
@@ -28,9 +28,11 @@ describe("DictionaryTrie", () => {
 describe("keyword text utilities", () => {
   it("sanitizes punctuation without stop-word removal", () => {
     expect(sanitizeKeywordText("The, quick-brown! fox?")).toBe("The quick brown fox");
+    expect(sanitizeKeywordText("a(b)c")).toBe("abc");
   });
 
   it("extracts lower-cased tokens", () => {
     expect(extractKeywordTokens("Tom Hanks, Cast Away")).toEqual(["tom", "hanks", "cast", "away"]);
+    expect(extractKeywordTokens("a(b)c")).toEqual(["abc"]);
   });
 });

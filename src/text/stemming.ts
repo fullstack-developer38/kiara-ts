@@ -1,5 +1,40 @@
 const vowels = new Set(["a", "e", "i", "o", "u"]);
 
+const snowballEarlyExceptions = new Map<string, string>([
+  ["skis", "ski"],
+  ["skies", "sky"],
+  ["dying", "die"],
+  ["lying", "lie"],
+  ["tying", "tie"],
+  ["idly", "idl"],
+  ["gently", "gentl"],
+  ["ugly", "ugli"],
+  ["early", "earli"],
+  ["only", "onli"],
+  ["singly", "singl"],
+]);
+
+const snowballInvariantExceptions = new Set([
+  "sky",
+  "news",
+  "howe",
+  "atlas",
+  "cosmos",
+  "bias",
+  "andes",
+]);
+
+const snowballStep1aStopWords = new Set([
+  "inning",
+  "outing",
+  "canning",
+  "herring",
+  "earring",
+  "proceed",
+  "exceed",
+  "succeed",
+]);
+
 function isConsonant(word: string, index: number): boolean {
   const char = word[index];
   if (char === undefined) {
@@ -98,6 +133,15 @@ export function stemEnglishToken(token: string): string {
     return word;
   }
 
+  const earlyException = snowballEarlyExceptions.get(word);
+  if (earlyException !== undefined) {
+    return earlyException;
+  }
+
+  if (snowballInvariantExceptions.has(word)) {
+    return word;
+  }
+
   // Step 1a
   if (word.endsWith("sses")) {
     word = `${word.slice(0, -4)}ss`;
@@ -107,6 +151,10 @@ export function stemEnglishToken(token: string): string {
     // keep as-is
   } else if (word.endsWith("s")) {
     word = word.slice(0, -1);
+  }
+
+  if (snowballStep1aStopWords.has(word)) {
+    return word;
   }
 
   // Step 1b

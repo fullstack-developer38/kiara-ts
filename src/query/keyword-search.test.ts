@@ -14,8 +14,8 @@ interface MovieRow {
 }
 
 const movieSchema = defineSchema<MovieRow>([
-  textField("title", { caseInsensitive: true }),
-  textField("plot", { caseInsensitive: true }),
+  textField("title", { caseInsensitive: true, oneEditAway: true }),
+  textField("plot", { caseInsensitive: true, oneEditAway: true }),
   numberField("year"),
 ]);
 
@@ -124,11 +124,12 @@ describe("KeywordSearch", () => {
     expect(result.usedKeywords.length).toBe(2);
   });
 
-  it("returns minimum-match rows among positive matches", () => {
+  it("applies Java minimum-match postfilter over nonnumeric field cardinality", () => {
     const search = new KeywordSearch(createStore(), 10);
     const result = search.minimumMatch("return stranded");
 
-    expect(result.results.map((row) => row.title)).toEqual(["Cast Away", "Apollo 13"]);
+    expect(result.results.map((row) => row.title)).toEqual([]);
+    expect(result.matchedKeywords).toEqual([]);
   });
 
   it("matches stem variants when a field is configured with stemmedIndex", () => {

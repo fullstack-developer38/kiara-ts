@@ -53,4 +53,13 @@ describe("stemEnglishToken", () => {
       expect(stemEnglishToken(token)).toBe(token);
     }
   });
+
+  it("preserves Snowball English exception behavior used by Java", () => {
+    expect(stemEnglishToken("skies")).toBe("sky");
+    expect(stemEnglishToken("dying")).toBe("die");
+    expect(stemEnglishToken("lying")).toBe("lie");
+    expect(stemEnglishToken("news")).toBe("news");
+    expect(stemEnglishToken("proceed")).toBe("proceed");
+    expect(stemEnglishToken("succeed")).toBe("succeed");
+  });
 });

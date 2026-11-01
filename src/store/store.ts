@@ -2,7 +2,7 @@ import { QueryValidationError, StoreStateError } from "../errors.js";
 import type { Condition } from "../query/condition.js";
 import type { CompiledSchema, FieldName } from "../schema/types.js";
 import { buildPreparedStoreData } from "./index-builder.js";
-import { executeSearch } from "./search-engine.js";
+import { executeLegacyProjection, executeSearch } from "./search-engine.js";
 import { StoreState, type StoreState as StoreStateType } from "./store-state.js";
 import { serializeTrieSnapshot } from "./trie-diagnostics.js";
 import {
@@ -168,15 +168,17 @@ export class Store<T extends object> {
       }
     }
 
-    const rows = this.search(conditions, limit);
-    return rows.map((row) => {
-      const projected: Record<string, string | null> = {};
-      for (const field of selectedFields) {
-        const value = row[field];
-        projected[field.toUpperCase()] = value === null || value === undefined ? null : String(value);
-      }
-      return projected;
-    });
+    if (this.state !== StoreState.READY) {
+      throw new StoreStateError("Store query is allowed only after preparation is complete.", {
+        state: this.state,
+      });
+    }
+    if (this.preparedData === undefined) {
+      throw new StoreStateError("Store is ready but prepared indexes are unavailable.", {
+        state: this.state,
+      });
+    }
+    return executeLegacyProjection(this.preparedData, conditions, selectedFields, limit);
   }
 
   public getPreparedTrieSnapshot(): TrieSnapshot {

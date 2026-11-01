@@ -39,8 +39,7 @@ const schema = defineSchema<MatrixRow>([
   textField("dateTimeRanges", { secondaryType: "commaSeparatedDateTimeRanges" }),
 ]);
 
-const scalarTextOperators = new Set([Operator.EQUAL, Operator.NOT_EQUAL]);
-const scalarNumericOperators = new Set([
+const scalarOperatorsWithoutNotContains = new Set([
   Operator.EQUAL,
   Operator.NOT_EQUAL,
   Operator.LESS_THAN,
@@ -48,8 +47,15 @@ const scalarNumericOperators = new Set([
   Operator.GREATER_THAN,
   Operator.GREATER_THAN_EQUAL,
   Operator.BETWEEN,
+  Operator.CONTAINS_EITHER,
+  Operator.CONTAINS_ALL,
+  Operator.CONTAINS_EITHER_INCLUDING_NULL,
 ]);
 const collectionOperators = new Set([
+  ...scalarOperatorsWithoutNotContains,
+  Operator.NOT_CONTAINS,
+]);
+const scalarRangeOperators = new Set([
   Operator.EQUAL,
   Operator.NOT_EQUAL,
   Operator.CONTAINS_EITHER,
@@ -57,32 +63,25 @@ const collectionOperators = new Set([
   Operator.CONTAINS_EITHER_INCLUDING_NULL,
   Operator.NOT_CONTAINS,
 ]);
-const rangeOperators = new Set([
-  Operator.EQUAL,
-  Operator.NOT_EQUAL,
-  Operator.CONTAINS_EITHER,
-  Operator.CONTAINS_ALL,
-  Operator.NOT_CONTAINS,
-]);
 
 const scenarios: ReadonlyArray<{
   readonly field: keyof MatrixRow;
   readonly allowed: ReadonlySet<string>;
 }> = [
-  { field: "textValue", allowed: scalarTextOperators },
-  { field: "boolValue", allowed: scalarTextOperators },
-  { field: "numberValue", allowed: scalarNumericOperators },
-  { field: "dateValue", allowed: scalarNumericOperators },
+  { field: "textValue", allowed: scalarOperatorsWithoutNotContains },
+  { field: "boolValue", allowed: scalarOperatorsWithoutNotContains },
+  { field: "numberValue", allowed: scalarOperatorsWithoutNotContains },
+  { field: "dateValue", allowed: scalarOperatorsWithoutNotContains },
   { field: "tags", allowed: collectionOperators },
   { field: "numberTags", allowed: collectionOperators },
   { field: "dateTags", allowed: collectionOperators },
   { field: "dateTimeTags", allowed: collectionOperators },
-  { field: "numericRange", allowed: rangeOperators },
-  { field: "dateRange", allowed: rangeOperators },
-  { field: "dateTimeRange", allowed: rangeOperators },
-  { field: "numericRanges", allowed: rangeOperators },
-  { field: "dateRanges", allowed: rangeOperators },
-  { field: "dateTimeRanges", allowed: rangeOperators },
+  { field: "numericRange", allowed: scalarRangeOperators },
+  { field: "dateRange", allowed: scalarRangeOperators },
+  { field: "dateTimeRange", allowed: scalarRangeOperators },
+  { field: "numericRanges", allowed: scalarRangeOperators },
+  { field: "dateRanges", allowed: scalarRangeOperators },
+  { field: "dateTimeRanges", allowed: scalarRangeOperators },
 ];
 
 describe("operator parity matrix", () => {

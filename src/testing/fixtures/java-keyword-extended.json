@@ -44,7 +44,7 @@
       "id": "keyword:minimum-with-two-rows",
       "method": "minimum",
       "input": "return",
-      "expectedTitles": ["Apollo 13"]
+      "expectedTitles": []
     },
     {
       "id": "keyword:best-typo-correction-apollo",

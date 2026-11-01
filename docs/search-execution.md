@@ -5,7 +5,35 @@ the **1.1.1-search.0** development candidate; the raw evidence retains that
 version label. See the [GitHub release](https://github.com/kapoorlabs/kiara-ts/releases/tag/v1.2.0)
 for distribution and validation status.
 
-## What changed
+## Unreleased compatible follow-up
+
+The current working tree additionally implements:
+
+- One interval entry per distinct normalized range/prefix, with ordered postings.
+- Lazy posting-group views instead of flattened candidate sets and a global
+  candidate sort; ordered intersections and bound-sliced ancestry joins.
+- Lazy exclusions and compatible same-field numeric bound fusion.
+- Bounded source-order cursors for suitable limited queries, with indexed
+  fallback on skewed data; lazy heap roots/siblings and single-leaf jumps.
+- Terminal spans for full output, avoiding traversal of every suffix field.
+- A cost-guarded rare-token fast path for existing TS best-match scoring.
+
+See the [posting planner](../src/store/posting-plan.ts) and
+[gap tracker](./java-search-parity-plan.md). Typecheck/build, 176 unit tests,
+nine browser-worker tests and 41,344 old/new differential checks pass.
+Current TS result/error/keyword semantics are preserved. Java behavior changes
+and actual JVM/Node performance comparison remain future gated phases.
+
+These changes add index metadata and heuristic planning; they do not make every
+query constant-time. Full output still materializes returned rows and sorts
+their IDs into source order. Overlap, low selectivity, prefix emptiness checks
+and source-order skew can require substantial candidate work.
+
+The [new native-filter measurements](../../kiara-ts-examples/docs/native-filter-optimized.md)
+are separate working-tree evidence. **All release timings and verification
+counts below are historical and have not been regenerated.**
+
+## Released 1.2.0 architecture
 
 The production structured-search path now uses:
 

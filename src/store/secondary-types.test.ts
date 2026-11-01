@@ -82,7 +82,7 @@ describe("secondary-type indexing and search", () => {
       store.search([
         createCondition<SecondaryRow, "releaseDate">({
           field: "releaseDate",
-          operator: Operator.CONTAINS_ALL,
+          operator: Operator.NOT_CONTAINS,
           values: ["2000-01-01"],
         }),
       ]),

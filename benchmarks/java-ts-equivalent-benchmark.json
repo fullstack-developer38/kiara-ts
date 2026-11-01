@@ -1,0 +1,197 @@
+{
+  "generatedAt": "2026-11-01T18:47:53.357Z",
+  "profile": "ci",
+  "warmupIterations": 8,
+  "timedIterations": 25,
+  "budgets": {
+    "prepareRatioMax": 30,
+    "retainedMemoryRatioMax": 6,
+    "workloadP95RatioMax": {
+      "numericEqual": 15,
+      "numericBetweenTail": 15,
+      "collectionEqualG9": 15,
+      "keywordExactTitle": 20,
+      "broadLimit": 15
+    }
+  },
+  "rows": [
+    10000,
+    100000
+  ],
+  "runs": [
+    {
+      "size": 10000,
+      "java": {
+        "runtime": "21.0.13.0.2",
+        "prepareMs": 3681.5512,
+        "retainedBytes": 11497504,
+        "workloads": [
+          {
+            "name": "numericEqual",
+            "expectedCount": 1,
+            "count": 1,
+            "p50Ms": 0.0647,
+            "p95Ms": 0.1067
+          },
+          {
+            "name": "numericBetweenTail",
+            "expectedCount": 20,
+            "count": 20,
+            "p50Ms": 0.5104,
+            "p95Ms": 0.6971
+          },
+          {
+            "name": "collectionEqualG9",
+            "expectedCount": 1000,
+            "count": 1000,
+            "p50Ms": 5.0767,
+            "p95Ms": 7.2481
+          },
+          {
+            "name": "keywordExactTitle",
+            "expectedCount": 1,
+            "count": 1,
+            "p50Ms": 0.0783,
+            "p95Ms": 0.1753
+          },
+          {
+            "name": "broadLimit",
+            "expectedCount": 100,
+            "count": 100,
+            "p50Ms": 3.905,
+            "p95Ms": 15.1689
+          }
+        ]
+      },
+      "ts": {
+        "runtime": "v26.13.0",
+        "prepareMs": 95.36430000000018,
+        "retainedBytes": 25925600,
+        "workloads": [
+          {
+            "name": "numericEqual",
+            "expectedCount": 1,
+            "count": 1,
+            "p50Ms": 0.007999999999810825,
+            "p95Ms": 0.027100000000245927
+          },
+          {
+            "name": "numericBetweenTail",
+            "expectedCount": 20,
+            "count": 20,
+            "p50Ms": 0.020499999999628926,
+            "p95Ms": 0.07639999999992142
+          },
+          {
+            "name": "collectionEqualG9",
+            "expectedCount": 1000,
+            "count": 1000,
+            "p50Ms": 0.14649999999983265,
+            "p95Ms": 0.1885999999994965
+          },
+          {
+            "name": "keywordExactTitle",
+            "expectedCount": 1,
+            "count": 1,
+            "p50Ms": 0.005799999999908323,
+            "p95Ms": 0.024500000000443833
+          },
+          {
+            "name": "broadLimit",
+            "expectedCount": 100,
+            "count": 100,
+            "p50Ms": 0.04500000000007276,
+            "p95Ms": 0.18850000000020373
+          }
+        ]
+      }
+    },
+    {
+      "size": 100000,
+      "java": {
+        "runtime": "21.0.13.0.2",
+        "prepareMs": 469538.1504,
+        "retainedBytes": 110588536,
+        "workloads": [
+          {
+            "name": "numericEqual",
+            "expectedCount": 1,
+            "count": 1,
+            "p50Ms": 0.0643,
+            "p95Ms": 0.1163
+          },
+          {
+            "name": "numericBetweenTail",
+            "expectedCount": 20,
+            "count": 20,
+            "p50Ms": 0.4538,
+            "p95Ms": 0.6285
+          },
+          {
+            "name": "collectionEqualG9",
+            "expectedCount": 10000,
+            "count": 10000,
+            "p50Ms": 9.4169,
+            "p95Ms": 11.3232
+          },
+          {
+            "name": "keywordExactTitle",
+            "expectedCount": 1,
+            "count": 1,
+            "p50Ms": 0.0748,
+            "p95Ms": 0.1956
+          },
+          {
+            "name": "broadLimit",
+            "expectedCount": 100,
+            "count": 100,
+            "p50Ms": 47.1567,
+            "p95Ms": 54.4096
+          }
+        ]
+      },
+      "ts": {
+        "runtime": "v26.13.0",
+        "prepareMs": 759.6648999999743,
+        "retainedBytes": 255813056,
+        "workloads": [
+          {
+            "name": "numericEqual",
+            "expectedCount": 1,
+            "count": 1,
+            "p50Ms": 0.004100000020116568,
+            "p95Ms": 0.005000000004656613
+          },
+          {
+            "name": "numericBetweenTail",
+            "expectedCount": 20,
+            "count": 20,
+            "p50Ms": 0.016099999949801713,
+            "p95Ms": 0.022700000030454248
+          },
+          {
+            "name": "collectionEqualG9",
+            "expectedCount": 10000,
+            "count": 10000,
+            "p50Ms": 1.4514999999664724,
+            "p95Ms": 1.5484000000287779
+          },
+          {
+            "name": "keywordExactTitle",
+            "expectedCount": 1,
+            "count": 1,
+            "p50Ms": 0.005200000014156103,
+            "p95Ms": 0.01069999998435378
+          },
+          {
+            "name": "broadLimit",
+            "expectedCount": 100,
+            "count": 100,
+            "p50Ms": 0.052299999981187284,
+            "p95Ms": 0.0746999999973923
+          }
+        ]
+      }
+    }
+  ]
+}

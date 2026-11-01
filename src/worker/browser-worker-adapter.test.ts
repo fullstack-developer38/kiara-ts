@@ -236,7 +236,7 @@ describe("Browser worker smoke adapter", () => {
         conditions: [
           createCondition<MovieRow, "title">({
             field: "title",
-            operator: Operator.CONTAINS_ALL,
+            operator: Operator.NOT_CONTAINS,
             values: ["cast away"],
           }),
         ],

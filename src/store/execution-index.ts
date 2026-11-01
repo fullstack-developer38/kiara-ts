@@ -16,13 +16,17 @@ export interface ExecutionNode {
   readonly firstRow: number;
   start: number;
   end: number;
+  terminalStart: number;
+  terminalEnd: number;
 }
 
 export interface ExecutionField {
   readonly nodes: readonly number[];
+  readonly sourceNodes: readonly number[];
   readonly equality: ReadonlyMap<string, readonly number[]>;
   readonly fullKeys: ReadonlyMap<string, readonly number[]>;
   readonly numeric: readonly { key: number | bigint; nodeIds: readonly number[] }[];
+  readonly numericCounts: readonly number[];
   readonly intervals: ReadonlyMap<string, IntervalIndex>;
   readonly missing: readonly number[];
   readonly rangeNodes: readonly number[];
@@ -31,6 +35,7 @@ export interface ExecutionField {
 export interface ExecutionIndex {
   readonly nodes: readonly ExecutionNode[];
   readonly fields: ReadonlyMap<string, ExecutionField>;
+  readonly terminals: readonly number[];
 }
 
 const indexes = new WeakMap<object, ExecutionIndex>();
@@ -73,7 +78,9 @@ export function buildExecutionIndex<T extends object>(
   const nodes: ExecutionNode[] = [{
     id: 0, fieldName: null, level: 0, parentId: null, children: new Map(),
     value: undefined, terminalRows: [], firstRow: rows[0]?.id ?? Infinity, start: 0, end: 0,
+    terminalStart: 0, terminalEnd: 0,
   }];
+  const sourceNodes = new Map<string, number[]>();
   for (const row of rows) {
     let parent = nodes[0]!;
     for (const field of data.schema.fields) {
@@ -88,7 +95,9 @@ export function buildExecutionIndex<T extends object>(
         nodes.push({
           id, fieldName: field.name, level: parent.level + 1, parentId: parent.id,
           children: new Map(), value, terminalRows: [], firstRow: row.id, start: 0, end: 0,
+          terminalStart: 0, terminalEnd: 0,
         });
+        append(sourceNodes, field.name, id);
       }
       parent = nodes[id]!;
     }
@@ -98,13 +107,17 @@ export function buildExecutionIndex<T extends object>(
   let clock = 0;
   const traversal: { node: ExecutionNode; exit: boolean }[] = [{ node: nodes[0]!, exit: false }];
   const fieldNodes = new Map<string, number[]>();
+  const terminals: number[] = [];
   while (traversal.length) {
     const { node, exit } = traversal.pop()!;
     if (exit) {
       node.end = clock++;
+      node.terminalEnd = terminals.length;
       continue;
     }
     node.start = clock++;
+    node.terminalStart = terminals.length;
+    if (node.terminalRows.length) terminals.push(node.id);
     if (node.fieldName !== null) append(fieldNodes, node.fieldName, node.id);
     traversal.push({ node, exit: true });
     for (const id of [...node.children.values()].reverse()) traversal.push({ node: nodes[id]!, exit: false });
@@ -117,7 +130,7 @@ export function buildExecutionIndex<T extends object>(
     const equality = new Map<string, number[]>();
     const fullKeys = new Map<string, number[]>();
     const numericKeys = new Map<string, number | bigint>();
-    const buckets = new Map<string, IntervalEntry[]>();
+    const buckets = new Map<string, Map<string, IntervalEntry>>();
     const missing: number[] = [];
     const rangeNodes: number[] = [];
     for (const id of ids) {
@@ -134,43 +147,68 @@ export function buildExecutionIndex<T extends object>(
       else missing.push(id);
       if (value.rangeValues?.length) rangeNodes.push(id);
       for (const range of value.rangeValues ?? []) {
-        const entry = { lower: range.lower, upper: range.upper, nodeId: id };
-        const bucket = buckets.get(range.prefix);
-        if (bucket) bucket.push(entry);
-        else buckets.set(range.prefix, [entry]);
+        let bucket = buckets.get(range.prefix);
+        if (!bucket) {
+          bucket = new Map();
+          buckets.set(range.prefix, bucket);
+        }
+        const key = `${scalarKey(range.lower)}:${scalarKey(range.upper)}`;
+        const entry = bucket.get(key);
+        if (entry) {
+          if (entry.nodeIds.at(-1) !== id) entry.nodeIds.push(id);
+        } else {
+          bucket.set(key, { lower: range.lower, upper: range.upper, nodeIds: [id] });
+        }
       }
     }
+    const numeric = [...numericKeys].map(([key, value]) => ({ key: value, nodeIds: equality.get(key)! }))
+      .sort((a, b) => compareNumeric(a.key, b.key));
+    const numericCounts = [0];
+    for (const entry of numeric) numericCounts.push(numericCounts.at(-1)! + entry.nodeIds.length);
     fields.set(field.name, {
-      nodes: ids, equality, fullKeys, missing, rangeNodes,
-      numeric: [...numericKeys].map(([key, value]) => ({ key: value, nodeIds: equality.get(key)! }))
-        .sort((a, b) => compareNumeric(a.key, b.key)),
-      intervals: new Map([...buckets].map(([prefix, entries]) => [prefix, new IntervalIndex(entries)])),
+      nodes: ids, sourceNodes: sourceNodes.get(field.name) ?? [], equality, fullKeys, missing, rangeNodes,
+      numeric, numericCounts,
+      intervals: new Map([...buckets].map(([prefix, entries]) => [prefix, new IntervalIndex([...entries.values()])])),
     });
   }
-  return { nodes, fields };
+  return { nodes, fields, terminals };
 }
 
 export function terminalRows(
-  index: ExecutionIndex, roots: Iterable<number>, work?: IndexWork, limit?: number,
+  index: ExecutionIndex, roots: Iterable<number>, work?: IndexWork, limit?: number, sourceOrdered = false,
+  collapseDuplicateRows = false,
 ): number[] {
   if (limit !== undefined && limit <= 0) return [];
-  if (limit !== undefined && Number.isFinite(limit)) return limitedTerminalRows(index, roots, limit, work);
+  if (limit !== undefined && Number.isFinite(limit)) {
+    return limitedTerminalRows(index, roots, limit, work, sourceOrdered, collapseDuplicateRows);
+  }
   const result: number[] = [];
-  const stack = [...roots];
-  while (stack.length) {
-    const node = index.nodes[stack.pop()!]!;
+  for (const id of roots) {
+    const node = index.nodes[id]!;
     if (work) work.trieNodesVisited += 1;
-    for (const rowId of node.terminalRows) result.push(rowId);
-    for (const child of node.children.values()) stack.push(child);
+    for (let i = node.terminalStart; i < node.terminalEnd; i++) {
+      const leaf = index.nodes[index.terminals[i]!]!;
+      if (work && leaf.id !== node.id) work.trieNodesVisited += 1;
+      if (collapseDuplicateRows) {
+        const rowId = leaf.terminalRows[0];
+        if (rowId !== undefined) result.push(rowId);
+      } else {
+        for (const rowId of leaf.terminalRows) result.push(rowId);
+      }
+    }
   }
   return result.sort((a, b) => a - b);
 }
 
 function limitedTerminalRows(
-  index: ExecutionIndex, roots: Iterable<number>, limit: number, work?: IndexWork,
+  index: ExecutionIndex, roots: Iterable<number>, limit: number, work?: IndexWork, sourceOrdered = false,
+  collapseDuplicateRows = false,
 ): number[] {
-  const heap = [...roots].map((id) => ({ id, position: -1, first: index.nodes[id]!.firstRow }));
-  type Entry = typeof heap[number];
+  const iterator = roots[Symbol.iterator]();
+  let nextRoot = sourceOrdered ? iterator.next() : undefined;
+  type Entry = { id: number; position: number; first: number; siblings?: Iterator<number> };
+  const heap: Entry[] = sourceOrdered ? [] : [...roots].map((id) => ({ id, position: -1, first: index.nodes[id]!.firstRow }));
+  if (work) work.heapEntriesQueued += heap.length;
   const siftDown = (start: number) => {
     let parent = start;
     while (parent * 2 + 1 < heap.length) {
@@ -182,6 +220,7 @@ function limitedTerminalRows(
     }
   };
   const push = (entry: Entry) => {
+    if (work) work.heapEntriesQueued += 1;
     heap.push(entry);
     let child = heap.length - 1;
     while (child > 0) {
@@ -194,7 +233,13 @@ function limitedTerminalRows(
   };
   for (let i = Math.floor(heap.length / 2) - 1; i >= 0; i--) siftDown(i);
   const result: number[] = [];
-  while (heap.length && result.length < limit) {
+  while ((heap.length || (nextRoot && !nextRoot.done)) && result.length < limit) {
+    if (nextRoot && !nextRoot.done
+      && (!heap.length || index.nodes[nextRoot.value]!.firstRow <= heap[0]!.first)) {
+      push({ id: nextRoot.value, position: -1, first: index.nodes[nextRoot.value]!.firstRow });
+      nextRoot = iterator.next();
+      continue;
+    }
     const entry = heap[0]!;
     const tail = heap.pop()!;
     if (heap.length) {
@@ -202,15 +247,32 @@ function limitedTerminalRows(
       siftDown(0);
     }
     const node = index.nodes[entry.id]!;
+    if (entry.siblings) {
+      const sibling = entry.siblings.next();
+      if (!sibling.done) {
+        push({ id: sibling.value, position: -1, first: index.nodes[sibling.value]!.firstRow, siblings: entry.siblings });
+      }
+    }
     if (entry.position >= 0) {
       result.push(entry.first);
-      const next = node.terminalRows[entry.position + 1];
-      if (next !== undefined) push({ id: node.id, position: entry.position + 1, first: next });
+      if (!collapseDuplicateRows) {
+        const next = node.terminalRows[entry.position + 1];
+        if (next !== undefined) push({ id: node.id, position: entry.position + 1, first: next });
+      }
     } else {
       if (work) work.trieNodesVisited += 1;
+      if (!node.terminalRows.length && node.terminalEnd - node.terminalStart === 1) {
+        const leafId = index.terminals[node.terminalStart]!;
+        push({ id: leafId, position: -1, first: index.nodes[leafId]!.firstRow });
+        continue;
+      }
       const first = node.terminalRows[0];
       if (first !== undefined) push({ id: node.id, position: 0, first });
-      for (const id of node.children.values()) push({ id, position: -1, first: index.nodes[id]!.firstRow });
+      const siblings = node.children.values();
+      const child = siblings.next();
+      if (!child.done) {
+        push({ id: child.value, position: -1, first: index.nodes[child.value]!.firstRow, siblings });
+      }
     }
   }
   return result;

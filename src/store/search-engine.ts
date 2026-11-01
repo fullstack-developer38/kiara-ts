@@ -9,34 +9,19 @@ import type { FieldName, SchemaField } from "../schema/types.js";
 import { normalizeConditionValue } from "./index-builder.js";
 import {
   collectionKey, getExecutionIndex, scalarKey, terminalRows,
-  type ExecutionField, type ExecutionIndex,
+  type ExecutionIndex,
 } from "./execution-index.js";
-import { bound, type IndexWork } from "./ordered-index.js";
+import { bound, compareNumeric, type IndexWork } from "./ordered-index.js";
+import {
+  hasMatches, joinPlans, matchingNodes, numericPlan, postingPlan, subtractPlans, type PostingPlan,
+} from "./posting-plan.js";
 import {
   NormalizationProfile, type AnyModel, type NormalizedScalar, type PreparedStoreData,
 } from "./types.js";
 
-interface Selection {
-  readonly ids: Set<number>;
-  readonly excluded: boolean;
-  readonly field: ExecutionField;
-  readonly level: number;
-}
-
-function union(groups: Iterable<Iterable<number>>, work?: IndexWork): Set<number> {
-  const result = new Set<number>();
-  for (const group of groups) {
-    for (const id of group) {
-      if (work) work.postingEntriesVisited += 1;
-      result.add(id);
-    }
-  }
-  return result;
-}
-
-function intersection(left: Set<number>, right: Set<number>): Set<number> {
-  if (left.size > right.size) return intersection(right, left);
-  return new Set([...left].filter((id) => right.has(id)));
+interface OrderedCondition<T extends object> {
+  readonly condition: Condition<T>;
+  readonly order: number;
 }
 
 function isCollection(type: string | undefined): boolean {
@@ -48,6 +33,15 @@ function isRange(type: string | undefined): boolean {
   return type === "numericRange" || type === "commaSeparatedNumericRanges"
     || type === "dateRange" || type === "commaSeparatedDateRanges"
     || type === "dateTimeRange" || type === "commaSeparatedDateTimeRanges";
+}
+
+function compareOrdered(left: NormalizedScalar, right: NormalizedScalar): number {
+  if (left === null && right === null) return 0;
+  if (left === null) return -1;
+  if (right === null) return 1;
+  const leftText = typeof left === "boolean" ? String(left) : String(left);
+  const rightText = typeof right === "boolean" ? String(right) : String(right);
+  return leftText < rightText ? -1 : leftText > rightText ? 1 : 0;
 }
 
 function rangePoint(
@@ -85,45 +79,104 @@ function rangePoint(
   return { prefix: start ? value.slice(0, start) : "", point };
 }
 
+function orderedConditions<T extends object>(
+  data: PreparedStoreData<T>,
+  conditions: readonly Condition<T>[],
+): OrderedCondition<T>[] {
+  const fieldOrder = new Map(data.schema.fields.map((field, index) => [field.name, index]));
+  const ordered: OrderedCondition<T>[] = [];
+  for (let i = 0; i < conditions.length; i++) {
+    const condition = conditions[i]!;
+    const schemaField = data.schema.fieldMap.get(condition.field);
+    if (!schemaField) {
+      throw new QueryValidationError(`Unknown field "${condition.field}" in condition.`,
+        "QUERY_INVALID_CONDITION", { field: condition.field });
+    }
+    if (schemaField.ignoreIndex) {
+      throw new QueryValidationError(
+        `Field "${condition.field}" is marked ignoreIndex and cannot be used in search conditions.`,
+        "QUERY_INVALID_CONDITION", { field: condition.field, operator: condition.operator },
+      );
+    }
+    const order = fieldOrder.get(condition.field);
+    if (order === undefined) {
+      throw new QueryValidationError(`Unknown field "${condition.field}" in condition.`,
+        "QUERY_INVALID_CONDITION", { field: condition.field });
+    }
+    ordered.push({ condition, order });
+  }
+  return ordered.sort((left, right) => left.order - right.order);
+}
+
+function buildSearchPlan<T extends object>(
+  data: PreparedStoreData<T>,
+  index: ExecutionIndex,
+  conditions: readonly Condition<T>[],
+  work?: IndexWork,
+): PostingPlan | undefined {
+  const sorted = orderedConditions(data, conditions);
+  let plan: PostingPlan | undefined;
+  for (let i = 0; i < sorted.length;) {
+    const current = sorted[i]!;
+    let groupPlan = select(data, index, current.condition, work);
+    i += 1;
+    while (i < sorted.length && sorted[i]!.order === current.order) {
+      const next = select(data, index, sorted[i]!.condition, work);
+      groupPlan = joinPlans(index, groupPlan, next, work);
+      i += 1;
+    }
+    if (!hasMatches(groupPlan, work)) return undefined;
+    plan = plan ? joinPlans(index, plan, groupPlan, work) : groupPlan;
+    if (!hasMatches(plan, work)) return undefined;
+  }
+  return plan;
+}
+
 function select<T extends object>(
   data: PreparedStoreData<T>, execution: ExecutionIndex, condition: Condition<T>, work?: IndexWork,
-): Selection {
-  const schemaField = data.schema.fieldMap.get(condition.field);
-  if (!schemaField) {
-    throw new QueryValidationError(`Unknown field "${condition.field}" in condition.`,
-      "QUERY_INVALID_CONDITION", { field: condition.field });
-  }
-  if (schemaField.ignoreIndex) {
-    throw new QueryValidationError(
-      `Field "${condition.field}" is marked ignoreIndex and cannot be used in search conditions.`,
-      "QUERY_INVALID_CONDITION", { field: condition.field, operator: condition.operator },
-    );
-  }
+): PostingPlan {
+  const schemaField = data.schema.fieldMap.get(condition.field)!;
   const field = schemaField as SchemaField<AnyModel, string>;
   validateOperatorCompatibility(field, condition.operator);
   const index = execution.fields.get(condition.field)!;
-  const level = index.nodes.length ? execution.nodes[index.nodes[0]!]!.level : 0;
-  const result = (ids: Set<number>, excluded = false): Selection => ({ ids, excluded, field: index, level });
+  const result = (groups: readonly (readonly number[])[], matches?: (id: number) => boolean) =>
+    postingPlan(execution, index, groups, work, matches);
+  const exclude = (selected: PostingPlan, ranges = false) => {
+    const universe = ranges ? index.rangeNodes : index.nodes;
+    return subtractPlans(execution, result([universe], (id) =>
+      !ranges || !!execution.nodes[id]!.value?.rangeValues?.length), selected, work);
+  };
   const normalize = (value: unknown) => normalizeConditionValue(field, value, data.normalizationProfile);
-  const lookup = (values: readonly NormalizedScalar[]) =>
-    union(values.map((value) => index.equality.get(scalarKey(value)) ?? []), work);
+  const lookup = (values: readonly NormalizedScalar[]) => {
+    const keys = new Set(values);
+    return result([...keys].map((key) => index.equality.get(scalarKey(key)) ?? []), (id) => {
+      const value = execution.nodes[id]!.value!;
+      return value.isCollection
+        ? (value.collectionValues ?? []).some((token) => keys.has(token))
+        : keys.has(value.scalar ?? null);
+    });
+  };
   const type = field.secondaryType;
 
   if (isRange(type) && (condition.operator === Operator.CONTAINS_EITHER
     || condition.operator === Operator.CONTAINS_ALL || condition.operator === Operator.NOT_CONTAINS)) {
-    const groups = (condition.values ?? []).map((value) => {
+    const points = (condition.values ?? []).map((value) => {
       const { prefix, point } = rangePoint(field, value, data.normalizationProfile);
-      return index.intervals.get(prefix)?.containing(point, work) ?? new Set<number>();
+      const groups = index.intervals.get(prefix)?.containingGroups(point, work) ?? [];
+      return result(groups, (id) => (execution.nodes[id]!.value?.rangeValues ?? []).some((range) =>
+        range.prefix === prefix && range.lower <= point && point <= range.upper));
     });
     if (condition.operator === Operator.CONTAINS_ALL) {
-      return result(groups.reduce(intersection, groups[0] ?? new Set<number>()));
+      return points.length ? points.reduce((left, right) => joinPlans(execution, left, right, work)) : result([]);
     }
-    const matches = union(groups, work);
+    const groups = (condition.values ?? []).length === 1 ? points[0]
+      : result(points.flatMap((plan) => [...plan.groups].map((group) => group.ids)),
+        (id) => points.some((plan) => plan.matches(id)));
+    const matches = groups ?? result([]);
     if (condition.operator === Operator.NOT_CONTAINS) {
-      // Missing ranges were rejected by the former residual predicate.
-      return result(new Set(index.rangeNodes.filter((id) => !matches.has(id))));
+      return exclude(matches, true);
     }
-    return result(matches);
+    return matches;
   }
 
   if (condition.operator === Operator.BETWEEN
@@ -132,42 +185,57 @@ function select<T extends object>(
     const between = condition.operator === Operator.BETWEEN;
     const first = normalize(between ? condition.lowerValue : condition.values?.[0]);
     const second = between ? normalize(condition.upperValue) : first;
-    if ((typeof first !== "number" && typeof first !== "bigint")
-      || (typeof second !== "number" && typeof second !== "bigint")) {
-      throw new QueryValidationError(between
-        ? `BETWEEN on field "${condition.field}" requires numeric bounds.`
-        : `Operator "${condition.operator}" on field "${condition.field}" requires one numeric value.`,
-      "QUERY_INVALID_CONDITION");
-    }
-    const entries = index.numeric;
-    const key = (entry: typeof entries[number]) => entry.key;
-    let start = 0;
-    let end = entries.length;
-    if (between || condition.operator === Operator.GREATER_THAN || condition.operator === Operator.GREATER_THAN_EQUAL) {
-      start = bound(entries, first, key, condition.operator === Operator.GREATER_THAN, work);
-    }
-    if (between || condition.operator === Operator.LESS_THAN || condition.operator === Operator.LESS_THAN_EQUAL) {
-      end = bound(entries, second, key, between || condition.operator === Operator.LESS_THAN_EQUAL, work);
-    }
-    const ids = new Set<number>();
-    for (let i = start; i < end; i++) {
-      if (work) work.keysVisited += 1;
-      for (const id of entries[i]!.nodeIds) {
-        if (work) work.postingEntriesVisited += 1;
-        ids.add(id);
+    const numericBounds = (typeof first === "number" || typeof first === "bigint")
+      && (typeof second === "number" || typeof second === "bigint");
+    if (numericBounds && !isCollection(type)) {
+      const entries = index.numeric;
+      const key = (entry: typeof entries[number]) => entry.key;
+      let start = 0;
+      let end = entries.length;
+      if (between || condition.operator === Operator.GREATER_THAN || condition.operator === Operator.GREATER_THAN_EQUAL) {
+        start = bound(entries, first, key, condition.operator === Operator.GREATER_THAN, work);
       }
+      if (between || condition.operator === Operator.LESS_THAN || condition.operator === Operator.LESS_THAN_EQUAL) {
+        end = bound(entries, second, key, between || condition.operator === Operator.LESS_THAN_EQUAL, work);
+      }
+      return numericPlan(execution, index, start, end, work);
     }
-    return result(ids);
+    const compare = numericBounds
+      ? (left: NormalizedScalar, right: NormalizedScalar) => {
+        if ((typeof left !== "number" && typeof left !== "bigint")
+          || (typeof right !== "number" && typeof right !== "bigint")) {
+          return Number.NaN;
+        }
+        return compareNumeric(left, right);
+      }
+      : compareOrdered;
+    const include = (value: NormalizedScalar) => {
+      const lower = compare(value, first);
+      const upper = compare(value, second);
+      if (Number.isNaN(lower) || Number.isNaN(upper)) return false;
+      if (between) return lower >= 0 && upper <= 0;
+      if (condition.operator === Operator.LESS_THAN) return lower < 0;
+      if (condition.operator === Operator.LESS_THAN_EQUAL) return lower <= 0;
+      if (condition.operator === Operator.GREATER_THAN) return lower > 0;
+      return lower >= 0;
+    };
+    const matches = (id: number) => {
+      const node = execution.nodes[id]!.value;
+      if (!node) return false;
+      const values = node.isCollection ? node.collectionValues ?? [] : [node.scalar ?? null];
+      return values.some((value) => include(value));
+    };
+    const selected = index.nodes.filter((id) => matches(id));
+    return result([selected], matches);
   }
 
   const values = (condition.values ?? []).map(normalize);
   switch (condition.operator) {
     case Operator.EQUAL:
-      // Preserve 1.x scalar equality semantics; collection membership has its own operators.
-      return result(field.secondaryType?.startsWith("commaSeparated") ? new Set() : lookup(values));
+      return lookup(values);
     case Operator.NOT_EQUAL: {
-      if (!isCollection(type)) return result(lookup(values), true);
-      const groups: Iterable<number>[] = [];
+      if (!isCollection(type)) return exclude(lookup(values));
+      const groups: (readonly number[])[] = [];
       for (const value of condition.values ?? []) {
         if (value === null || value === undefined) {
           groups.push(index.missing);
@@ -178,59 +246,33 @@ function select<T extends object>(
           groups.push(index.fullKeys.get(key) ?? []);
         }
       }
-      return result(union(groups, work), true);
+      return exclude(result(groups));
     }
     case Operator.CONTAINS_EITHER:
     case Operator.CONTAINS_EITHER_INCLUDING_NULL:
     case Operator.CONTAINS_ALL:
     case Operator.NOT_CONTAINS: {
-      if (!isCollection(type)) {
+      if (condition.operator === Operator.NOT_CONTAINS && !isCollection(type)) {
         throw new QueryValidationError(
           `${condition.operator} is supported only for collection fields. Field "${condition.field}" is not one.`,
           "QUERY_INVALID_CONDITION",
         );
       }
       if (condition.operator === Operator.CONTAINS_ALL) {
-        const groups = values.map((value) => new Set(index.equality.get(scalarKey(value)) ?? []));
-        return result(groups.reduce(intersection, groups[0] ?? new Set<number>()));
+        const groups = values.map((value) => lookup([value]));
+        return groups.length ? groups.reduce((left, right) => joinPlans(execution, left, right, work)) : result([]);
       }
-      const matches = lookup(values);
+      const selected = lookup(values);
       if (condition.operator === Operator.CONTAINS_EITHER_INCLUDING_NULL && values.includes(null)) {
-        for (const id of index.missing) matches.add(id);
+        return result([
+          ...values.map((value) => index.equality.get(scalarKey(value)) ?? []), index.missing,
+        ], (id) => selected.matches(id) || execution.nodes[id]!.value!.collectionValues === undefined);
       }
-      return result(matches, condition.operator === Operator.NOT_CONTAINS);
+      return condition.operator === Operator.NOT_CONTAINS ? exclude(selected) : selected;
     }
     default:
-      return result(new Set());
+      return result([]);
   }
-}
-
-function ordered(index: ExecutionIndex, ids: Iterable<number>): number[] {
-  return [...ids].sort((a, b) => index.nodes[a]!.start - index.nodes[b]!.start);
-}
-
-function descendants(
-  index: ExecutionIndex, ancestors: readonly number[], candidates: readonly number[], work?: IndexWork,
-): number[] {
-  const result: number[] = [];
-  const start = (id: number) => index.nodes[id]!.start;
-  if (ancestors.length <= candidates.length) {
-    for (const id of ancestors) {
-      const ancestor = index.nodes[id]!;
-      let cursor = bound(candidates, ancestor.start, start, false, work);
-      while (cursor < candidates.length && start(candidates[cursor]!) < ancestor.end) {
-        if (work) work.postingEntriesVisited += 1;
-        result.push(candidates[cursor++]!);
-      }
-    }
-  } else {
-    for (const id of candidates) {
-      const cursor = bound(ancestors, start(id), start, true, work) - 1;
-      if (cursor >= 0 && index.nodes[ancestors[cursor]!]!.end > start(id)) result.push(id);
-      if (work) work.postingEntriesVisited += 1;
-    }
-  }
-  return result;
 }
 
 export function executeSearchIds<T extends object>(
@@ -238,33 +280,30 @@ export function executeSearchIds<T extends object>(
 ): number[] {
   validateConditions(conditions);
   const index = getExecutionIndex(data);
-  let candidates: number[] | undefined;
-  let level = 0;
-  // Resolve in caller order to retain validation/empty-result precedence.
-  for (const condition of conditions) {
-    const next = select(data, index, condition, work);
-    if (candidates === undefined) {
-      candidates = next.excluded
-        ? next.field.nodes.filter((id) => !next.ids.has(id))
-        : conditions.length === 1 ? [...next.ids] : ordered(index, next.ids);
-      level = next.level;
-    } else if (level === next.level) {
-      candidates = candidates.filter((id) => next.ids.has(id) !== next.excluded);
-    } else if (level < next.level) {
-      const eligible = next.excluded ? next.field.nodes : ordered(index, next.ids);
-      candidates = descendants(index, candidates, eligible, work);
-      if (next.excluded) candidates = candidates.filter((id) => !next.ids.has(id));
-      level = next.level;
-    } else {
-      const matches = descendants(index, ordered(index, next.ids), candidates, work);
-      if (next.excluded) {
-        const rejected = new Set(matches);
-        candidates = candidates.filter((id) => !rejected.has(id));
-      } else candidates = matches;
-    }
-    if (!candidates.length) return [];
+  const plan = buildSearchPlan(data, index, conditions, work);
+  if (!plan) return [];
+  const collapseDuplicateRows = data.normalizationProfile === NormalizationProfile.JAVA;
+  if (limit !== undefined && Number.isFinite(limit) && limit > 0 && plan.estimate > 0
+    && Math.ceil(limit) * plan.field.nodes.length < plan.estimate * plan.estimate) {
+    // Source-order limits are a TS contract. Bound the adaptive cursor so skewed
+    // data falls back to posting joins instead of forcing a whole-field scan.
+    const selected = plan;
+    const budget = Math.max(Math.ceil(limit), Math.ceil(plan.estimate));
+    let exhaustedBudget = false;
+    const roots = {
+      *[Symbol.iterator]() {
+        let visited = 0;
+        for (const id of selected.field.sourceNodes) {
+          if (visited++ >= budget) { exhaustedBudget = true; return; }
+          if (work) { work.sourceOrderNodesVisited += 1; work.predicateChecks += 1; }
+          if (selected.matches(id)) yield id;
+        }
+      },
+    };
+    const ids = terminalRows(index, roots, work, limit, true, collapseDuplicateRows);
+    if (!exhaustedBudget) return ids;
   }
-  return terminalRows(index, candidates ?? [], work, limit);
+  return terminalRows(index, matchingNodes(plan, work), work, limit, false, collapseDuplicateRows);
 }
 
 export function executeSearch<T extends object>(
@@ -276,6 +315,104 @@ export function executeSearch<T extends object>(
     if (work) work.sourceRowsVisited += 1;
     return data.rows[id]!;
   });
+}
+
+function normalizeLegacyLimit(limit?: number): number | undefined {
+  if (limit === undefined || !Number.isFinite(limit)) return undefined;
+  if (limit <= 0) return 0;
+  return Math.ceil(limit);
+}
+
+function javaNumericString(value: unknown): string {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return String(value);
+  const formatted = numeric.toFixed(2);
+  return formatted.endsWith(".00") ? formatted.slice(0, -3) : formatted;
+}
+
+function legacyFieldValue<T extends object>(
+  data: PreparedStoreData<T>,
+  rowId: number,
+  position: number,
+): string | null {
+  const field = data.schema.fields[position]!;
+  const value = (data.rows[rowId] as Record<string, unknown>)[field.name];
+  if (value === null || value === undefined) return null;
+  if (field.kind === "number" || field.kind === "long") return javaNumericString(value);
+  return String(value);
+}
+
+export function executeLegacyProjection<T extends object>(
+  data: PreparedStoreData<T>,
+  conditions: readonly Condition<T>[],
+  selectedFields: readonly FieldName<T>[],
+  limit?: number,
+): readonly Record<string, string | null>[] {
+  validateConditions(conditions);
+  const maxResults = normalizeLegacyLimit(limit);
+  if (maxResults === 0) return [];
+  const index = getExecutionIndex(data);
+  const plan = buildSearchPlan(data, index, conditions);
+  if (!plan) return [];
+
+  const selectedPositions = [...new Set(selectedFields
+    .map((field) => data.schema.fields.findIndex((candidate) => candidate.name === field)))]
+    .filter((position) => position >= 0)
+    .sort((left, right) => left - right);
+  if (!selectedPositions.length) return [];
+  const selected = new Set(selectedPositions);
+  const firstSelected = selectedPositions[0]!;
+  const lastSelected = selectedPositions[selectedPositions.length - 1]!;
+  const roots = new Set<number>();
+  const results: Record<string, string | null>[] = [];
+
+  const pushResult = (entry: Record<string, string | null>) => {
+    results.push(entry);
+    return maxResults !== undefined && results.length >= maxResults;
+  };
+
+  const writeField = (target: Record<string, string | null>, nodeId: number, position: number) => {
+    const key = String(data.schema.fields[position]!.name).toUpperCase();
+    target[key] = legacyFieldValue(data, index.nodes[nodeId]!.firstRow, position);
+  };
+
+  const appendPostfix = (
+    nodeId: number,
+    nextPosition: number,
+    current: Record<string, string | null>,
+  ): boolean => {
+    if (maxResults !== undefined && results.length >= maxResults) return true;
+    if (nextPosition > lastSelected) return pushResult({ ...current });
+    for (const childId of index.nodes[nodeId]!.children.values()) {
+      let snapshot = current;
+      if (selected.has(nextPosition)) {
+        snapshot = { ...current };
+        writeField(snapshot, childId, nextPosition);
+      }
+      if (appendPostfix(childId, nextPosition + 1, snapshot)) return true;
+    }
+    return false;
+  };
+
+  for (const rootId of matchingNodes(plan)) {
+    if (roots.has(rootId)) continue;
+    roots.add(rootId);
+    const root = index.nodes[rootId]!;
+    const rootPosition = root.level - 1;
+    const projection: Record<string, string | null> = {};
+    if (firstSelected <= rootPosition) {
+      let node = root;
+      while (node.fieldName !== null) {
+        const position = node.level - 1;
+        if (selected.has(position)) writeField(projection, node.id, position);
+        if (node.parentId === null) break;
+        node = index.nodes[node.parentId]!;
+      }
+    }
+    if (appendPostfix(rootId, rootPosition + 1, projection)) break;
+  }
+
+  return results;
 }
 
 export { buildPreparedStoreData } from "./index-builder.js";

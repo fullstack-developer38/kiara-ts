@@ -40,8 +40,8 @@ interface KeywordDocument {
 }
 
 const schema = defineSchema<KeywordRow>([
-  textField("title", { caseInsensitive: true }),
-  textField("plot", { caseInsensitive: true }),
+  textField("title", { caseInsensitive: true, oneEditAway: true }),
+  textField("plot", { caseInsensitive: true, oneEditAway: true }),
   numberField("year"),
 ]);
 

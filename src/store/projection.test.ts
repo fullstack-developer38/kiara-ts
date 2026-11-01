@@ -42,7 +42,7 @@ describe("projection search", () => {
       [createCondition<MovieRow, "title">({ field: "title", values: ["big"] })],
       ["title", "rating"],
     );
-    expect(projected).toEqual([{ TITLE: "Big", RATING: "7.3" }]);
+    expect(projected).toEqual([{ TITLE: "Big", RATING: "7.30" }]);
   });
 
   it("returns all fields when legacy projection fields are omitted", () => {
@@ -53,8 +53,31 @@ describe("projection search", () => {
     expect(projected[0]).toMatchObject({
       TITLE: "Big",
       YEAR: "1988",
-      RATING: "7.3",
+      RATING: "7.30",
     });
+  });
+
+  it("matches Java shared-prefix projection cardinality", () => {
+    interface PrefixRow {
+      id: number;
+      title: string;
+      tags: string;
+    }
+    const schema = defineSchema<PrefixRow>([
+      numberField("id"),
+      textField("title"),
+      textField("tags", { secondaryType: "commaSeparatedStrings" }),
+    ]);
+    const store = new Store(schema, { normalizationProfile: NormalizationProfile.JAVA });
+    store.loadRows([
+      { id: 1, title: "alpha", tags: "red" },
+      { id: 1, title: "alpha", tags: "blue" },
+    ]);
+    store.prepare();
+    expect(store.searchLegacyProjection(
+      [createCondition<PrefixRow, "id">({ field: "id", values: [1] })],
+      ["title"],
+    )).toEqual([{ TITLE: "alpha" }]);
   });
 
   it("rejects unknown projection fields", () => {

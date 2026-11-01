@@ -5,12 +5,17 @@ export interface IndexWork {
   postingEntriesVisited: number;
   trieNodesVisited: number;
   sourceRowsVisited: number;
+  predicateChecks: number;
+  ancestryNodesVisited: number;
+  sourceOrderNodesVisited: number;
+  heapEntriesQueued: number;
 }
 
 export function createIndexWork(): IndexWork {
   return {
     boundaryComparisons: 0, keysVisited: 0, intervalNodesVisited: 0,
     postingEntriesVisited: 0, trieNodesVisited: 0, sourceRowsVisited: 0,
+    predicateChecks: 0, ancestryNodesVisited: 0, sourceOrderNodesVisited: 0, heapEntriesQueued: 0,
   };
 }
 
@@ -41,7 +46,7 @@ export function bound<T>(
 export interface IntervalEntry {
   readonly lower: number | bigint;
   readonly upper: number | bigint;
-  readonly nodeId: number;
+  readonly nodeIds: number[];
 }
 
 interface IntervalNode {
@@ -72,6 +77,17 @@ export class IntervalIndex {
 
   public containing(point: number | bigint, work?: IndexWork): Set<number> {
     const result = new Set<number>();
+    for (const ids of this.containingGroups(point, work)) {
+      for (const id of ids) {
+        if (work) work.postingEntriesVisited += 1;
+        result.add(id);
+      }
+    }
+    return result;
+  }
+
+  public containingGroups(point: number | bigint, work?: IndexWork): readonly (readonly number[])[] {
+    const result: (readonly number[])[] = [];
     const stack: IntervalNode[] = this.root ? [this.root] : [];
     while (stack.length) {
       const node = stack.pop()!;
@@ -79,7 +95,7 @@ export class IntervalIndex {
       if (compareNumeric(node.maximum, point) < 0) continue;
       if (node.left) stack.push(node.left);
       if (compareNumeric(node.entry.lower, point) > 0) continue;
-      if (compareNumeric(node.entry.upper, point) >= 0) result.add(node.entry.nodeId);
+      if (compareNumeric(node.entry.upper, point) >= 0) result.push(node.entry.nodeIds);
       if (node.right) stack.push(node.right);
     }
     return result;

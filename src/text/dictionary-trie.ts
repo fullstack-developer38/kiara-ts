@@ -6,6 +6,10 @@ interface TrieNode {
   orderedChildren?: readonly [string, TrieNode][];
 }
 
+interface DictionaryTrieOptions {
+  readonly normalizeCase?: boolean;
+}
+
 function createNode(): TrieNode {
   return {
     children: new Map<string, TrieNode>(),
@@ -13,55 +17,23 @@ function createNode(): TrieNode {
   };
 }
 
-function isOneEditAway(left: string, right: string): boolean {
-  const lengthDiff = Math.abs(left.length - right.length);
-  if (lengthDiff > 1 || left === right) {
-    return false;
-  }
-
-  let i = 0;
-  let j = 0;
-  let edits = 0;
-
-  while (i < left.length && j < right.length) {
-    if (left[i] === right[j]) {
-      i += 1;
-      j += 1;
-      continue;
-    }
-
-    edits += 1;
-    if (edits > 1) {
-      return false;
-    }
-
-    if (left.length > right.length) {
-      i += 1;
-    } else if (left.length < right.length) {
-      j += 1;
-    } else {
-      i += 1;
-      j += 1;
-    }
-  }
-
-  if (i < left.length || j < right.length) {
-    edits += 1;
-  }
-  return edits === 1;
-}
-
 export class DictionaryTrie {
   private readonly root: TrieNode;
   private readonly words: Set<string>;
+  private readonly normalizeCase: boolean;
 
-  public constructor() {
+  public constructor(options: DictionaryTrieOptions = {}) {
     this.root = createNode();
     this.words = new Set<string>();
+    this.normalizeCase = options.normalizeCase ?? true;
+  }
+
+  private normalize(word: string): string {
+    return this.normalizeCase ? word.toLocaleLowerCase("en-US") : word;
   }
 
   public addWord(word: string): void {
-    const normalized = word.trim().toLocaleLowerCase("en-US");
+    const normalized = this.normalize(word.trim());
     if (normalized.length === 0) {
       return;
     }
@@ -90,11 +62,17 @@ export class DictionaryTrie {
   }
 
   public addText(input: string): void {
-    this.addWords(extractKeywordTokens(input));
+    this.addWords(extractKeywordTokens(input, this.normalizeCase));
   }
 
   public hasWord(word: string): boolean {
-    return this.words.has(word.trim().toLocaleLowerCase("en-US"));
+    return this.words.has(this.normalize(word.trim()));
+  }
+
+  private getOrderedChildren(node: TrieNode): readonly [string, TrieNode][] {
+    node.orderedChildren ??= [...node.children.entries()]
+      .sort((left, right) => left[0].localeCompare(right[0], "en-US"));
+    return node.orderedChildren;
   }
 
   public predict(prefix: string, limit = 10): string[] {
@@ -102,7 +80,7 @@ export class DictionaryTrie {
       return [];
     }
 
-    const normalizedPrefix = prefix.trim().toLocaleLowerCase("en-US");
+    const normalizedPrefix = this.normalize(prefix.trim());
     let node = this.root;
     for (const char of normalizedPrefix) {
       const child = node.children.get(char);
@@ -113,22 +91,18 @@ export class DictionaryTrie {
     }
 
     const predictions: string[] = [];
-    const stack: Array<{ node: TrieNode; word: string }> = [{ node, word: normalizedPrefix }];
+    const queue: Array<{ node: TrieNode; word: string }> = [{ node, word: normalizedPrefix }];
 
-    while (stack.length > 0 && predictions.length < limit) {
-      const current = stack.pop();
-      if (current === undefined) {
-        continue;
-      }
-
+    while (queue.length > 0 && predictions.length < limit) {
+      const current = queue.shift()!;
       if (current.node.terminal) {
         predictions.push(current.word);
+        if (predictions.length >= limit) {
+          return predictions;
+        }
       }
-
-      const children = current.node.orderedChildren ??= [...current.node.children.entries()]
-        .sort((left, right) => right[0].localeCompare(left[0], "en-US"));
-      for (const [char, child] of children) {
-        stack.push({ node: child, word: current.word + char });
+      for (const [char, child] of this.getOrderedChildren(current.node)) {
+        queue.push({ node: child, word: current.word + char });
       }
     }
 
@@ -136,34 +110,101 @@ export class DictionaryTrie {
   }
 
   public getOneEditCandidate(input: string, accepts: (word: string) => boolean = () => true): string | null {
-    const normalized = input.trim().toLocaleLowerCase("en-US");
+    const normalized = this.normalize(input.trim());
     if (normalized.length <= 3) {
       return null;
     }
+    let editDistance = 0;
+    let charPos = 0;
+    let currentNode = this.root;
+    let built = "";
 
-    const candidates: string[] = [];
-    const stack = [{ node: this.root, word: "", distances: Array.from({ length: normalized.length + 1 }, (_, i) => i) }];
-    while (stack.length) {
-      const current = stack.pop()!;
-      if (current.node.terminal && current.distances[normalized.length] === 1
-        && isOneEditAway(normalized, current.word) && accepts(current.word)) {
-        candidates.push(current.word);
+    while (charPos < normalized.length) {
+      if (editDistance > 1) {
+        return null;
       }
-      for (const [char, node] of current.node.children) {
-        let distances = current.distances;
-        // Match the existing UTF-16 edit contract even when a trie edge is a code point.
-        for (const unit of char.split("")) {
-          const next = [distances[0]! + 1];
-          for (let i = 1; i <= normalized.length; i++) {
-            next.push(Math.min(next[i - 1]! + 1, distances[i]! + 1,
-              distances[i - 1]! + (normalized[i - 1] === unit ? 0 : 1)));
-          }
-          distances = next;
+
+      const currentChar = normalized[charPos]!;
+      const direct = currentNode.children.get(currentChar);
+      if (direct !== undefined) {
+        currentNode = direct;
+        built += currentChar;
+        charPos += 1;
+        continue;
+      }
+
+      const nextChar = charPos < normalized.length - 1 ? normalized[charPos + 1]! : undefined;
+      if (nextChar !== undefined) {
+        const deletion = currentNode.children.get(nextChar);
+        if (deletion !== undefined) {
+          editDistance += 1;
+          currentNode = deletion;
+          built += nextChar;
+          charPos += 2;
+          continue;
         }
-        if (distances.some((distance) => distance <= 1)) stack.push({ node, word: current.word + char, distances });
       }
+
+      const nextLevel = new Map<string, { readonly node: TrieNode; readonly prefix: string }>();
+      for (const [firstChar, firstNode] of this.getOrderedChildren(currentNode)) {
+        if (firstNode.terminal) {
+          nextLevel.set("*", { node: firstNode, prefix: firstChar });
+        }
+        for (const [secondChar, secondNode] of this.getOrderedChildren(firstNode)) {
+          nextLevel.set(secondChar, { node: secondNode, prefix: `${firstChar}${secondChar}` });
+        }
+      }
+
+      const insertion = nextLevel.get(currentChar);
+      if (insertion !== undefined) {
+        editDistance += 1;
+        currentNode = insertion.node;
+        built += insertion.prefix;
+        charPos += 1;
+        continue;
+      }
+
+      if (nextChar !== undefined) {
+        const update = nextLevel.get(nextChar);
+        if (update !== undefined) {
+          editDistance += 1;
+          currentNode = update.node;
+          built += update.prefix;
+          charPos += 2;
+          continue;
+        }
+      }
+
+      if (charPos === normalized.length - 1) {
+        editDistance += 1;
+        const terminal = nextLevel.get("*");
+        if (terminal !== undefined) {
+          currentNode = terminal.node;
+          built += terminal.prefix;
+        }
+        break;
+      }
+
+      return null;
     }
-    candidates.sort((a, b) => a.localeCompare(b, "en-US"));
-    return candidates[0] ?? null;
+
+    if (!currentNode.terminal) {
+      const next = this.getOrderedChildren(currentNode)[0];
+      if (next === undefined) {
+        return null;
+      }
+      editDistance += 1;
+      currentNode = next[1];
+      built += next[0];
+    }
+
+    if (editDistance > 1) {
+      return null;
+    }
+
+    if (!accepts(built)) {
+      return null;
+    }
+    return built;
   }
 }
