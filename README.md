@@ -57,6 +57,7 @@ Both patterns use the same search engine. **You only need one.**
 - [Schema-aware query interpretation](#schema-aware-query-interpretation)
 - [Feature reference and detailed docs](#feature-reference-and-detailed-docs)
 - [Release and package info](#release-and-package-info)
+- [Contributing](#contributing)
 
 ## Why Kiara TS
 
@@ -348,3 +349,7 @@ See [worker integration](./docs/usage.md#workers) for background execution.
 
 Release notes:
 [CHANGELOG.md](./CHANGELOG.md)
+
+## Contributing
+
+See [CONTRIBUTING.md](./CONTRIBUTING.md).
