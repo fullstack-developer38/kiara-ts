@@ -4,6 +4,17 @@ Search your in-memory data by any combination of searchable fields, without
 manually creating indexes for each query. Kiara TS is a browser-first TypeScript
 library with zero runtime dependencies.
 
+[![npm](https://img.shields.io/npm/v/@kapoorlabs/kiara-ts)](https://www.npmjs.com/package/@kapoorlabs/kiara-ts)
+[![downloads](https://img.shields.io/npm/dw/@kapoorlabs/kiara-ts)](https://www.npmjs.com/package/@kapoorlabs/kiara-ts)
+[![license](https://img.shields.io/npm/l/@kapoorlabs/kiara-ts)](./LICENSE)
+
+**[Try the live demo](https://kapoor-labs.github.io/kiara-demo/)**: 10,000 products searched in your browser, typos included.
+
+[![Typing "wireles hedphones" gets corrected to wireless headphones, then brand, color and tag filters are combined](./docs/images/demo.gif)](https://kapoor-labs.github.io/kiara-demo/)
+
+Also available for Java: [kiara](https://github.com/kapoorlabs/kiara). Based on the paper
+[Efficient Storage and Retrieval of In-Memory Static Data](https://doi.org/10.22059/jac.2020.76227).
+
 **Prepared indexes, selective execution.** Version 1.2.0
 uses trie-node matching, binary-search bounds, and interval trees. See
 [execution and measured results](./docs/search-execution.md) for the algorithms,
@@ -46,6 +57,7 @@ Both patterns use the same search engine. **You only need one.**
 - [Schema-aware query interpretation](#schema-aware-query-interpretation)
 - [Feature reference and detailed docs](#feature-reference-and-detailed-docs)
 - [Release and package info](#release-and-package-info)
+- [Contributing](#contributing)
 
 ## Why Kiara TS
 
@@ -337,3 +349,7 @@ See [worker integration](./docs/usage.md#workers) for background execution.
 
 Release notes:
 [CHANGELOG.md](./CHANGELOG.md)
+
+## Contributing
+
+See [CONTRIBUTING.md](./CONTRIBUTING.md).
