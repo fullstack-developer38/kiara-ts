@@ -10,7 +10,7 @@ library with zero runtime dependencies.
 
 **[Try the live demo](https://kapoor-labs.github.io/kiara-demo/)**: 10,000 products searched in your browser, typos included.
 
-[![Typing "wireles hedphones" gets corrected to wireless headphones, then brand, color and tag filters are combined](./docs/images/demo.gif)](https://kapoor-labs.github.io/kiara-demo/)
+[![Typing "wireles keybord" gets corrected to wireless keyboard, then brand, color and tag filters are combined](./docs/images/demo.gif)](https://kapoor-labs.github.io/kiara-demo/)
 
 Also available for Java: [kiara](https://github.com/kapoorlabs/kiara). Based on the paper
 [Efficient Storage and Retrieval of In-Memory Static Data](https://doi.org/10.22059/jac.2020.76227).
