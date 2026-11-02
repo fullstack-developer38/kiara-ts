@@ -1,9 +1,10 @@
 # Documentation, examples and live-demo migration plan
 
-Status: planned; execute after the
-[Java behavior contract](./java-behavior-parity-implementation-plan.md) is
-approved and implemented. This plan does not change current examples or deploy
-a new library.
+Status: in progress. Library README, usage guide, CHANGELOG, execution docs,
+demo script, examples README, guided examples, business labs, type-ahead text
+and example tests are updated for 1.2.1 (D1-D4). Articles and article snippet
+tests (D5), npm-registry dependency switch, and hosted-demo deployment (D6-D7)
+remain.
 
 ## Source of truth
 

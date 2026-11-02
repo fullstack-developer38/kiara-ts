@@ -12,7 +12,7 @@ import {
 } from "../../dist/index.js";
 
 const movieSchema = defineSchema([
-  textField("title", { caseInsensitive: true }),
+  textField("title", { caseInsensitive: true, oneEditAway: true }),
   numberField("year"),
   textField("actors", {
     caseInsensitive: true,

@@ -91,11 +91,11 @@ captured from the 1.1.1-search.0 development candidate:
 | F06/F07 trie and inverted indexes | Existing tests plus duplicate/order/inspection tests pass | DFS node postings drive production queries; legacy row views are lazy | Selective equality/combined-query comparison and work counts |
 | Q03-Q07 numeric bounds | JAVA/NATIVE and existing operator fixtures pass | Binary-search bound slices, no complete distinct-key scan | 100k-key comparison-count gate and isolated timing pairs |
 | F09 ranges | Numeric/date/date-time and collection fixtures pass | Prefix-partitioned balanced interval trees | 100k disjoint-interval pruning gate and isolated timing pairs |
-| F14-F20 keyword/dictionary | Existing TS behavior and Java fixture corpus pass; universal Java semantic parity is not claimed | Cached token postings and trie-based one-edit lookup; TS scoring retained | Warm keyword old/new timings and snapshot reuse tests |
+| F14-F20 keyword/dictionary | Java keyword combination search, minimum-match postfilter, Snowball exceptions, greedy correction and BFS prediction verified by the live Java contract check | Cached token postings and trie-based greedy one-edit lookup | Warm keyword timings, snapshot reuse tests and the JVM/Node equivalent-workload benchmark |
 
-See [search execution](./search-execution.md) for source revisions, limitations,
-the Java `minimumMatch` distinction, and complete measurements. No Java-versus-TS
-or Redis performance conclusion follows from these TS-version comparisons.
+See [search execution](./search-execution.md) for source revisions, limitations
+and measurements, and the [gap tracker](./java-search-parity-plan.md) for the
+Java-versus-TS contract and performance gates.
 
 Compatibility blockers and closure criteria are tracked in
 [blocker-gates.md](./blocker-gates.md).

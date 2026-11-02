@@ -15,17 +15,17 @@ library with zero runtime dependencies.
 Also available for Java: [kiara](https://github.com/kapoorlabs/kiara). Based on the paper
 [Efficient Storage and Retrieval of In-Memory Static Data](https://doi.org/10.22059/jac.2020.76227).
 
-**Prepared indexes, selective execution.** Version 1.2.0
-uses trie-node matching, binary-search bounds, and interval trees. See
-[execution and measured results](./docs/search-execution.md) for the algorithms,
-compatibility boundaries, and comparison with 1.1.0.
+**Prepared indexes, selective execution.** Kiara TS uses trie-node matching,
+binary-search bounds, and interval trees. See
+[execution and measured results](./docs/search-execution.md) for the algorithms
+and their limits.
 
-The [Java search parity plan and progress tracker](./docs/java-search-parity-plan.md)
-records confirmed algorithm/behavior gaps, acceptance criteria, and ongoing work.
-Full Java behavior and performance parity are not yet established.
-The next phases have separate [behavior implementation](./docs/java-behavior-parity-implementation-plan.md)
-and [documentation, examples and live-demo migration](./docs/java-parity-docs-demo-migration-plan.md)
-plans; neither changes current defaults or authorizes deployment.
+**Java-compatible behavior since 1.2.1.** Search results follow the Java
+[Kiara](https://github.com/kapoorlabs/kiara) reference implementation, verified
+by a [live Java-vs-TypeScript contract check](./docs/java-search-parity-plan.md).
+Upgrading from 1.2.0 changes some results, including spelling correction,
+keyword case-sensitivity, `minimumMatch`, and duplicate rows; see the
+[1.2.1 migration notes](./CHANGELOG.md#121---2026-11-01).
 
 ## Install
 
@@ -210,7 +210,7 @@ type Movie = {
 };
 
 const movieSchema = defineSchema<Movie>([
-  textField("title", { caseInsensitive: true }),
+  textField("title", { caseInsensitive: true, oneEditAway: true }),
   numberField("year"),
   textField("actors", {
     secondaryType: "commaSeparatedStrings",
@@ -253,6 +253,10 @@ console.log(results.map((row) => row.title));
 ```
 
 ### 3) Add keyword search with typo correction
+
+Spelling correction applies to fields marked `oneEditAway` (or `predictable`),
+like `title` above. Keyword matching is case-sensitive unless the field is
+`caseInsensitive`.
 
 ```ts
 import { KeywordSearch } from "@kapoorlabs/kiara-ts";

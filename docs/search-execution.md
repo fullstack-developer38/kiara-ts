@@ -1,13 +1,13 @@
 # Optimized search execution
 
-Included in **1.2.0** on 2026-10-24. The measurements below were captured from
-the **1.1.1-search.0** development candidate; the raw evidence retains that
-version label. See the [GitHub release](https://github.com/kapoorlabs/kiara-ts/releases/tag/v1.2.0)
-for distribution and validation status.
+Structured execution was introduced in **1.2.0** (2026-10-24). **1.2.1**
+(2026-11-01) refined the planner and aligned search behavior with the Java
+Kiara reference. The measurements in the later sections were captured from the
+**1.1.1-search.0** development candidate and are historical; see the
+[GitHub release](https://github.com/kapoorlabs/kiara-ts/releases/tag/v1.2.0)
+for that release's validation status.
 
-## Unreleased compatible follow-up
-
-The current working tree additionally implements:
+## 1.2.1 additions
 
 - One interval entry per distinct normalized range/prefix, with ordered postings.
 - Lazy posting-group views instead of flattened candidate sets and a global
@@ -16,22 +16,24 @@ The current working tree additionally implements:
 - Bounded source-order cursors for suitable limited queries, with indexed
   fallback on skewed data; lazy heap roots/siblings and single-leaf jumps.
 - Terminal spans for full output, avoiding traversal of every suffix field.
-- A cost-guarded rare-token fast path for existing TS best-match scoring.
+- Java-compatible operators, schema-order evaluation, duplicate collapse,
+  legacy projection traversal, keyword combination search, Snowball stemming,
+  greedy correction and breadth-first prediction. The
+  [CHANGELOG](../CHANGELOG.md#121---2026-11-01) lists the user-visible changes.
 
 See the [posting planner](../src/store/posting-plan.ts) and
-[gap tracker](./java-search-parity-plan.md). Typecheck/build, 176 unit tests,
-nine browser-worker tests and 41,344 old/new differential checks pass.
-Current TS result/error/keyword semantics are preserved. Java behavior changes
-and actual JVM/Node performance comparison remain future gated phases.
+[gap tracker](./java-search-parity-plan.md). A live Java-vs-TypeScript contract
+check (`npm run test:oracle:live`, 30 cases) and an equivalent-workload JVM/Node
+benchmark (`npm run bench:java-ts:equivalent`) run locally against a Java build.
 
 These changes add index metadata and heuristic planning; they do not make every
 query constant-time. Full output still materializes returned rows and sorts
 their IDs into source order. Overlap, low selectivity, prefix emptiness checks
 and source-order skew can require substantial candidate work.
 
-The [new native-filter measurements](../../kiara-ts-examples/docs/native-filter-optimized.md)
-are separate working-tree evidence. **All release timings and verification
-counts below are historical and have not been regenerated.**
+Current comparisons with native `Array.filter` and Fuse.js are in the
+[examples repository benchmarks](https://github.com/kapoor-labs/kiara-ts-examples/blob/main/docs/native-filter-comparison.md).
+**Release timings and verification counts below are historical.**
 
 ## Released 1.2.0 architecture
 
@@ -63,29 +65,25 @@ row IDs into every execution node.
 
 ## Compatibility boundaries
 
-The Java algorithm reference is `5f61c4761bd5ca391fa89dc98897a18f0d81e83f`.
-The previous TS source baseline was
-`c410514edd2441ccca887ddaeaa4cda27a2bfb80`, packaged as 1.1.0.
+Behavior targets Java Kiara 2.0.16
+(`9bbcdc209fed6f4818644501d4bb604b8cf4921d`). The 1.2.0 TS baseline was
+`fbae1fc5942abc17b9b322e4fa0a45a72d294b57`.
 
-This is **Java-style structured execution**, not a claim that every Java and
-TypeScript API or algorithm is identical:
+Results follow Java; the internal planner does not copy Java's code paths:
 
-- Conditions are resolved in caller order to preserve existing validation and
-  empty-result precedence; their matches use same-level intersection and DFS
-  ancestry joins.
+- Conditions are grouped and evaluated in schema field order. An empty earlier
+  field ends the search before later conditions are validated or executed.
 - JAVA and NATIVE normalization remain distinct. Ordered numeric comparisons
-  avoid coercing bigints to imprecise Numbers.
-- Existing scalar-versus-collection operator behavior is preserved, including
-  collection membership through CONTAINS operators and rejection of missing
-  ranges by the existing range NOT_CONTAINS contract.
-- TypeScript `bestMatch` and `minimumMatch` retain their existing positive
-  token-score semantics. Java's keyword-to-field search and minimum-match
-  postfilter are not silently substituted. Cached postings optimize the TS
-  behavior without introducing Java's combinatorial keyword enumeration.
-- Corrections remain scoped to records allowed by hard conditions. An exact
-  word or correction found only in excluded rows must not affect the query.
-- Source row ordering, duplicates, projection types, and result-limit behavior
-  remain covered. Configuration precedence still belongs to the application.
+  avoid coercing bigints to imprecise Numbers. Only the JAVA profile collapses
+  identical source rows.
+- Scalars accept comparisons and CONTAINS operators; collection EQUAL and
+  comparisons match individual members. NOT_CONTAINS stays collection/range-only,
+  and range NOT_CONTAINS still rejects missing ranges.
+- `bestMatch` evaluates keyword-to-field combinations in Java's order;
+  `minimumMatch` applies Java's distinct non-numeric value postfilter. Cached
+  postings and early pruning bound the combination search.
+- Corrections use the field's whole dictionary, as in Java, and only on
+  `oneEditAway`/`predictable` fields. Hard conditions still filter the results.
 - Records are read-only after preparation, as before. Replace a snapshot to
   refresh searchable data; do not mutate records behind prepared indexes.
 

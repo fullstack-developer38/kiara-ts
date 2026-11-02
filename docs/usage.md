@@ -15,10 +15,10 @@ Common field options:
 
 | Option | Purpose |
 |---|---|
-| `caseInsensitive` | Normalize text case for matching |
+| `caseInsensitive` | Lower-case text for structured and keyword matching; without it, keyword search is case-sensitive |
 | `ignoreIndex` | Exclude a field from search; attempts to query it throw |
-| `stemmedIndex` | Enable English stemming in keyword search |
-| `oneEditAway`, `predictable` | Dictionary-related field metadata |
+| `stemmedIndex` | Enable English (Snowball) stemming in keyword search |
+| `oneEditAway`, `predictable` | Enable keyword spelling correction for the field (decorators: `@OneEditAway()`, `@Predictable()`) |
 | `secondaryType` | Interpret serialized collections, dates, or ranges |
 | `format` | Set a supported date/date-time format |
 
@@ -27,8 +27,10 @@ Choose your numeric profile when constructing a store:
 - `NormalizationProfile.NATIVE`: preserves fractional number keys; rejects
   non-finite numeric inputs.
 - `NormalizationProfile.JAVA` (default): uses long-key conversion, including
-  truncation of fractional numbers and saturation at long boundaries.
-  Use native mode when decimal comparisons must preserve fractions.
+  truncation of fractional numbers and saturation at long boundaries. Like Java
+  Kiara, it returns identical source rows only once.
+  Use native mode when decimal comparisons must preserve fractions or when
+  duplicate source rows must be returned.
 
 For class decorators, use TypeScript standard decorators, not legacy
 `experimentalDecorators`. Call `initializeDecoratorMetadata()` **before**
@@ -241,14 +243,22 @@ The default operator is `EQUAL`. Conditions in a search are combined with AND.
 
 | Field family | Operators |
 |---|---|
-| Text, enum, boolean scalars | `EQUAL`, `NOT_EQUAL` |
-| Numbers and scalar dates/date-times | Equality, `LESS_THAN`, `LESS_THAN_EQUAL`, `GREATER_THAN`, `GREATER_THAN_EQUAL`, `BETWEEN` |
-| Collections | Equality, `CONTAINS_EITHER`, `CONTAINS_ALL`, `CONTAINS_EITHER_INCLUDING_NULL`, `NOT_CONTAINS` |
+| Text, enum, boolean, number and date scalars | Equality, `LESS_THAN`, `LESS_THAN_EQUAL`, `GREATER_THAN`, `GREATER_THAN_EQUAL`, `BETWEEN`, `CONTAINS_EITHER`, `CONTAINS_ALL`, `CONTAINS_EITHER_INCLUDING_NULL` |
+| Collections | All scalar operators, plus `NOT_CONTAINS` |
 | Ranges and range collections | Equality, `CONTAINS_EITHER`, `CONTAINS_ALL`, `NOT_CONTAINS` |
 
-Use `CONTAINS_EITHER` for collection membership, not scalar `EQUAL`.
-Collection `NOT_EQUAL` excludes a whole collection key, while `NOT_CONTAINS`
-excludes rows containing a matching member.
+On a scalar, `CONTAINS_EITHER` means "equals any value" and `CONTAINS_ALL`
+means "equals every value". Text comparisons such as `LESS_THAN` compare stored
+strings, so they are case-sensitive unless the field is `caseInsensitive`.
+
+On a collection, `EQUAL` and the comparison operators match when **any member**
+satisfies them: `tags EQUAL "red"` matches `"red,blue"`. `NOT_EQUAL` compares
+the whole serialized collection, while `NOT_CONTAINS` excludes rows containing
+a matching member.
+
+Conditions run in **schema field order**, not the order you pass them. When an
+earlier field matches nothing, later conditions are skipped, so an invalid
+condition on a later field returns `[]` instead of throwing.
 
 Secondary types are configured on fields and stored as serialized strings:
 
@@ -266,7 +276,9 @@ Java date-format patterns are supported; unsupported formats throw.
 
 For a null scalar, use `values: [null]`. On collections,
 `CONTAINS_EITHER_INCLUDING_NULL` with `values: [null, "blue"]` matches null
-collections or a matching member. Range types do not support that operator.
+collections or a matching member. Range fields accept that operator only for
+Java compatibility: it reads its values as range strings, not points, so use
+`CONTAINS_EITHER` to test points.
 
 ## Projections and limits
 
@@ -274,7 +286,8 @@ collections or a matching member. Range types do not support that operator.
 - `store.searchProjection(conditions, fields, limit)` returns selected
   properties with their original types.
 - `store.searchLegacyProjection(conditions, fields, limit)` returns uppercase
-  field names and string/null values.
+  field names and stored string/null values (for example, `"7.70"` for 7.7).
+  Like Java Kiara, rows sharing the selected values are returned once.
 
 Omit `limit` for all matches. A non-positive limit returns no rows.
 Typed projections require at least one field. Legacy projections select all
@@ -288,11 +301,28 @@ Input can be a sentence or an array of phrases. Options include:
 
 - `fields`: restrict the searchable text fields.
 - `conditions`: apply structured filters alongside keyword matching.
-- `limit`: cap returned records.
+- `limit`: cap returned records. Without it, every match is returned.
 
 Results include `results`, `matchedKeywords`, `correctedKeywords`,
 `usedKeywords`, and `truncated`. Check `truncated` when accepting long input.
-Enable `stemmedIndex` on appropriate fields for English stemming.
+
+- **`bestMatch`** returns the rows matching the most keywords, assigning each
+  keyword to a field the way Java Kiara does. Among equal scores it keeps
+  Java's combination order.
+- **`minimumMatch`** keeps best-match rows whose populated non-numeric values
+  are exactly the matched keywords: rows with "the keywords entered and nothing
+  more". It suits rule or configuration rows where blank fields are wildcards;
+  on wide records it usually returns nothing.
+- **Case:** keywords match exactly unless the field is `caseInsensitive`.
+- **Stemming:** `stemmedIndex` fields use Snowball English stemming, including
+  its exceptions (`skies → sky`, `news` unchanged).
+- **Spelling correction** runs only on `oneEditAway` or `predictable` fields,
+  and only for words longer than three characters. Like Java, it follows a
+  single greedy path through the field's dictionary: a typo near the start of a
+  word (`latern`) may not be corrected, and a correction can be an incomplete
+  word. Inspect `correctedKeywords` before showing a correction to users.
+- **Tokenization** replaces Java's punctuation set with spaces and removes
+  brackets without splitting words (`a(b)c` becomes `abc`).
 
 ## Dictionary and autocomplete
 
@@ -305,8 +335,10 @@ console.log(dictionary.predict("apo", 5)); // ["apollo"]
 console.log(dictionary.getOneEditCandidate("apolo")); // "apollo"
 ```
 
-Predictions return dictionary words, not matching records. One-edit correction
-supports insertion, deletion, or substitution and returns a candidate or `null`.
+Predictions return dictionary words, not matching records, breadth-first:
+shorter completions come before longer ones (`apo`, `apollo`, `apostle`,
+`apocalypse`). One-edit correction supports insertion, deletion, or
+substitution along one greedy trie path and returns a candidate or `null`.
 
 ## Workers
 

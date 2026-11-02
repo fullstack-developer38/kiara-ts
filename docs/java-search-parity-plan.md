@@ -81,7 +81,7 @@ the stated scope, not to overall Java parity.
 | T4 | Tokenization/case handling and dictionary eligibility differ | Verified | Bracket handling, case-sensitive/case-insensitive field behavior, and ignore-index dictionary exclusion now match Java live cases, including explicit one-edit eligibility gating surfaces |
 | V1 | Existing parity tests do not expose confirmed mismatches | Verified | `npm run test:oracle:live` now verifies 30 Java-vs-TS parity cases, and `npm run test:parity:gate` passes full oracle/operator/accounting gates (`448/448` covered, `0` missing) with zero unexplained mismatches |
 | V2 | Performance comparison is TS-to-TS, not Java-to-TS | Verified | Added local equivalent-workload JVM/Node benchmark (`bench:java-ts:equivalent:ci`, requires a built `../kiara` checkout) with explicit ratio budgets and persisted evidence in `benchmarks/java-ts-equivalent-benchmark.json` |
-| I1 | Examples still use the historical vendored candidate | Pending | Local-module benchmark/differential hooks verified; package/declaration/demo migration deferred to D2-D7 |
+| I1 | Examples still use the historical vendored candidate | In progress | Examples run on 1.2.1 (packed tarball until the npm mirror lists it); docs, guided examples, labs and tests updated; articles, registry switch and hosted demo pending |
 
 ## Evidence and acceptance log
 
